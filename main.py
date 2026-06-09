@@ -40,7 +40,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_name", default="DIV2K")
     parser.add_argument("--project_path", default=os.path.dirname(os.path.abspath(__file__)))
-    parser.add_argument("--mode", default="eval", choices=["train", "eval"])
+    parser.add_argument("--mode", default="test", choices=["train", "test", "eval"])
     parsed = parser.parse_args()
     project_path = os.path.abspath(parsed.project_path)
     parsed.model_config_path = os.path.join(
@@ -65,7 +65,7 @@ def main(args):
         seed_torch()
         eval_MambaJSCC(config)
         
-    elif args.mode=='eval':
+    elif args.mode in ['test', 'eval']:
 
         seed_torch()
         eval_MambaJSCC(config)

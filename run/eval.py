@@ -28,16 +28,19 @@ def _get_log_dir(config):
     return log_dir
 
 
-def _save_snr_curve(snr_list, performance_all, config):
+def _get_output_root(config):
     log_dir = _get_log_dir(config)
-    metric_name = config.TRAIN.EVAL_MATRIX
+    return os.path.dirname(os.path.normpath(log_dir))
+
+
+def _save_curve(snr_list, values, metric_name, log_dir):
     csv_path = os.path.join(log_dir, f"snr_{metric_name.lower()}_curve.csv")
     png_path = os.path.join(log_dir, f"snr_{metric_name.lower()}_curve.png")
 
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["snr", metric_name])
-        writer.writerows(zip(snr_list, performance_all))
+        writer.writerows(zip(snr_list, values))
 
     try:
         import matplotlib
@@ -45,7 +48,7 @@ def _save_snr_curve(snr_list, performance_all, config):
         import matplotlib.pyplot as plt
 
         plt.figure()
-        plt.plot(snr_list, performance_all, marker="o")
+        plt.plot(snr_list, values, marker="o")
         plt.xlabel("SNR (dB)")
         plt.ylabel(metric_name)
         plt.title(f"SNR-{metric_name}")
@@ -55,6 +58,29 @@ def _save_snr_curve(snr_list, performance_all, config):
         plt.close()
     except Exception as exc:
         print(f"Failed to save SNR curve plot: {exc}")
+
+
+def _save_eval_curves(snr_list, psnr_all, msssim_all, config):
+    log_dir = _get_log_dir(config)
+    _save_curve(snr_list, psnr_all, "PSNR", log_dir)
+    _save_curve(snr_list, msssim_all, "MS-SSIM", log_dir)
+
+
+def _psnr_value(x, y):
+    mse = torch.nn.functional.mse_loss(
+        x.clamp(0.0, 1.0) * 255.0, y.clamp(0.0, 1.0) * 255.0
+    )
+    return (10 * (torch.log(255.0 * 255.0 / mse) / np.log(10))).item()
+
+
+def _msssim_value(x, y, calculator):
+    return 1.0 - calculator(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)).mean().item()
+
+
+def _target_name(target, index):
+    if isinstance(target, (list, tuple)):
+        return str(target[index])
+    return str(target)
 
 
 @torch.no_grad()
@@ -104,12 +130,17 @@ def eval_MambaJSCC(config):
     # test_mem_and_comp(config, encoder, decoder, input_size=(H, W))
 
     print(H, W)
-    matrix = eval_matrix(config)
+    msssim_calculator = MS_SSIM(data_range=1.0, levels=4, channel=3).cuda()
     encoder.eval()
     decoder.eval()
     performance_all = []
+    psnr_all = []
+    msssim_all = []
     # SNR_list = [20] #config.CHANNEL.SNR
     SNR_list = config.CHANNEL.SNR
+    output_root = _get_output_root(config)
+    recon_root = os.path.join(output_root, "recon")
+    log_dir = _get_log_dir(config)
     print(
         "----------Evaluating: ls:128--OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
             config.MODEL.VSSM.OUT_CHANS,
@@ -131,6 +162,11 @@ def eval_MambaJSCC(config):
 
         number = 0
         performance_avg = 0
+        psnr_avg = 0
+        msssim_avg = 0
+        per_image_rows = []
+        recon_dir = os.path.join(recon_root, f"SNR_{SNR}")
+        os.makedirs(recon_dir, exist_ok=True)
         seed_torch()
         with tqdm(test_loader, dynamic_ncols=False) as tqdmTestData:
             for i, (input_image, target) in enumerate(tqdmTestData):
@@ -164,11 +200,36 @@ def eval_MambaJSCC(config):
                 end_decocer = time.time()
                 all_time = all_time + end_encoder - start_encoder + end_decocer - start_decoder
 
-                performance = matrix(recon_image, input_image)
+                batch_psnr_values = []
+                batch_msssim_values = []
+                for sample_idx in range(recon_image.shape[0]):
+                    recon_sample = recon_image[sample_idx : sample_idx + 1]
+                    input_sample = input_image[sample_idx : sample_idx + 1]
+                    psnr = _psnr_value(recon_sample, input_sample)
+                    msssim = _msssim_value(recon_sample, input_sample, msssim_calculator)
+                    batch_psnr_values.append(psnr)
+                    batch_msssim_values.append(msssim)
+
+                    name = _target_name(target, sample_idx)
+                    stem = os.path.splitext(os.path.basename(name))[0]
+                    recon_name = f"{stem}_SNR{SNR}_PSNR{psnr:.4f}_MSSSIM{msssim:.6f}.png"
+                    save_image(recon_sample.clamp(0.0, 1.0), os.path.join(recon_dir, recon_name))
+                    per_image_rows.append([name, SNR, psnr, msssim])
+
+                psnr_batch = sum(batch_psnr_values) / len(batch_psnr_values)
+                msssim_batch = sum(batch_msssim_values) / len(batch_msssim_values)
+                if config.TRAIN.EVAL_MATRIX == "MSSSIM":
+                    performance = msssim_batch
+                else:
+                    performance = psnr_batch
                 performance_avg = performance_avg + performance
+                psnr_avg = psnr_avg + psnr_batch
+                msssim_avg = msssim_avg + msssim_batch
                 tqdmTestData.set_postfix(
                     {
                         "matrix": performance,
+                        "PSNR": psnr_batch,
+                        "MS-SSIM": msssim_batch,
                         "CBR": CBR,
                         "SNR": SNR,
                         "per": (performance, performance_avg / (i + 1)),
@@ -176,11 +237,20 @@ def eval_MambaJSCC(config):
                 )
 
         performance_all.append(performance_avg / (i + 1))
+        psnr_all.append(psnr_avg / (i + 1))
+        msssim_all.append(msssim_avg / (i + 1))
+        metric_csv = os.path.join(log_dir, f"per_image_metrics_SNR_{SNR}.csv")
+        with open(metric_csv, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["image", "snr", "psnr", "ms_ssim"])
+            writer.writerows(per_image_rows)
 
     print(all_time / (len(SNR_list) * len(test_loader) * config.DATA.TEST_BATCH))
     print("SNRs:", SNR_list)
     print("performance:", performance_all)
-    _save_snr_curve(SNR_list, performance_all, config)
+    print("PSNR:", psnr_all)
+    print("MS-SSIM:", msssim_all)
+    _save_eval_curves(SNR_list, psnr_all, msssim_all, config)
 
 
 def eval_MambaJSCC_with_SNR_error(config, mode=2):
