@@ -1,0 +1,16 @@
+numpy
+PyYAML
+thop
+timm==0.4.12
+torch
+torch-geometric
+torch-operation-counter
+torchaudio
+torchmetrics
+torchvision
+tqdm
+yacs
+yarl
+fvcore
+taming-transformers
+matplotlib
