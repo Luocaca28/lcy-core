@@ -4,6 +4,7 @@ import sys
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.utils.data as data
 from torchvision import transforms, datasets
 from torch.utils.data.dataset import Dataset
@@ -179,7 +180,17 @@ def get_loader(config):
         test_dataset = Datasets(config.DATA.test_data_dir)
     # print(NUM_DATASET_WORKERS)
     # seed_torch()
-    if config.TRAIN.DATA_PARALLEL:
+    if dist.is_available() and dist.is_initialized():
+        sampler_train = torch.utils.data.distributed.DistributedSampler(train_dataset, shuffle=True)
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            sampler=sampler_train,
+            batch_size=config.DATA.TRAIN_BATCH,
+            num_workers=NUM_DATASET_WORKERS,
+            pin_memory=config.DATA.PIN_MEMORY,
+            drop_last=True,
+        )
+    elif config.TRAIN.DATA_PARALLEL:
         sampler_train = torch.utils.data.distributed.DistributedSampler(train_dataset, shuffle=True)
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
@@ -189,15 +200,16 @@ def get_loader(config):
             pin_memory=config.DATA.PIN_MEMORY,
             drop_last=True,
         )
-    train_loader = torch.utils.data.DataLoader(
-        dataset=train_dataset,
-        num_workers=NUM_DATASET_WORKERS,
-        pin_memory=config.DATA.PIN_MEMORY,
-        batch_size=config.DATA.TRAIN_BATCH,
-        # worker_init_fn=worker_init_fn_seed,
-        shuffle=True,
-        drop_last=False,
-    )
+    else:
+        train_loader = torch.utils.data.DataLoader(
+            dataset=train_dataset,
+            num_workers=NUM_DATASET_WORKERS,
+            pin_memory=config.DATA.PIN_MEMORY,
+            batch_size=config.DATA.TRAIN_BATCH,
+            # worker_init_fn=worker_init_fn_seed,
+            shuffle=True,
+            drop_last=False,
+        )
 
     test_loader = data.DataLoader(
         dataset=test_dataset, batch_size=config.DATA.TEST_BATCH, shuffle=False

@@ -1,11 +1,11 @@
 TRAIN:
-  EPOCHS: 100
-  SAVE_FRE: 100
+  EPOCHS: 300
+  SAVE_FRE: 300
   LOSS: 'PSNR'
   EVAL_MATRIX: 'PSNR'
-  ENCODER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/DIV2K_defscan_100ep_b4/encoder/'
-  DECODER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/DIV2K_defscan_100ep_b4/decoder/'
-  LOG_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/DIV2K_defscan_100ep_b4/logs/'
+  ENCODER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/DIV2K_defscan_300ep_b4/encoder/'
+  DECODER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/DIV2K_defscan_300ep_b4/decoder/'
+  LOG_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/DIV2K_defscan_300ep_b4/logs/'
   GAN_LOSS: False
 DATA:
   DATASET: "DIV2K_Kodak"

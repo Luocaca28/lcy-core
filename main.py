@@ -31,10 +31,12 @@ from run.eval import eval_MambaJSCC
 
 from utils.utils import GPUManager
 
-gm=GPUManager()
-device_idx=gm.auto_choice(mode=3)
-
-os.environ["CUDA_VISIBLE_DEVICES"] =  str(device_idx)
+if os.environ.get("CUDA_VISIBLE_DEVICES"):
+    print("Using CUDA_VISIBLE_DEVICES={}".format(os.environ["CUDA_VISIBLE_DEVICES"]))
+else:
+    gm=GPUManager()
+    device_idx=gm.auto_choice(mode=3)
+    os.environ["CUDA_VISIBLE_DEVICES"] =  str(device_idx)
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -62,6 +64,8 @@ def main(args):
 
         seed_torch()
         train_MambaJSCC(config) 
+        if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+            return
         seed_torch()
         eval_MambaJSCC(config)
         
