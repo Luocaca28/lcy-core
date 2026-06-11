@@ -338,7 +338,14 @@ class CrossMerge2(torch.autograd.Function):
         return xs, None, None
 
 
-def cross_merge_with_def(ys, indices, DR, scan_number=2, defscan_scale="preserve"):
+def cross_merge_with_def(
+    ys,
+    indices,
+    DR,
+    scan_number=2,
+    defscan_scale="preserve",
+    defscan_gate=None,
+):
     B, K, C, H, W = ys.shape
     L = H * W
     expected_k = scan_number + 1
@@ -361,6 +368,10 @@ def cross_merge_with_def(ys, indices, DR, scan_number=2, defscan_scale="preserve
         return (y_base + y_def) * (float(scan_number) / float(scan_number + 1))
     if defscan_scale == "sum":
         return y_base + y_def
+    if defscan_scale == "learned_gate":
+        assert defscan_gate is not None, "learned_gate requires defscan_gate"
+        gate = defscan_gate.view(B, 1, 1).to(device=y_base.device, dtype=y_base.dtype)
+        return (y_base + gate * y_def) * (float(scan_number) / (float(scan_number) + gate))
     raise ValueError(f"Unknown DEFSCAN_SCALE: {defscan_scale}")
 
 
@@ -384,6 +395,7 @@ def cross_selective_scan(
     snr=10,
     use_defscan=False,
     defscan_scale="preserve",
+    defscan_gate=None,
     DS=None,
     DR=None,
     InvertScan=None,
@@ -489,7 +501,12 @@ def cross_selective_scan(
     # if scan=="cross":
     if use_defscan:
         y: torch.Tensor = cross_merge_with_def(
-            ys, indices, DR, scan_number=scan_number, defscan_scale=defscan_scale
+            ys,
+            indices,
+            DR,
+            scan_number=scan_number,
+            defscan_scale=defscan_scale,
+            defscan_gate=defscan_gate,
         )
     else:
         if scan_number == 2:
@@ -573,6 +590,39 @@ class PatchReverseMerging2D(nn.Module):
         return x
 
 
+class DefScanGate(nn.Module):
+    def __init__(self, dim, hidden=64, init_bias=-1.5):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(dim + 1, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, 1),
+        )
+        self.net[-1]._defscan_gate_final = True
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.constant_(self.net[-1].bias, init_bias)
+
+    def forward(self, x, snr):
+        B = x.shape[0]
+        dtype = x.dtype
+        device = x.device
+        global_feat = x.mean(dim=(2, 3))
+
+        if not torch.is_tensor(snr):
+            snr = torch.tensor(snr, device=device, dtype=dtype)
+        else:
+            snr = snr.to(device=device, dtype=dtype)
+
+        if snr.dim() == 0 or snr.numel() == 1:
+            snr = snr.view(1).expand(B)
+        else:
+            snr = snr.view(B)
+
+        snr = snr.view(B, 1) / 20.0
+        gate = torch.sigmoid(self.net(torch.cat([global_feat, snr], dim=1)))
+        return gate.view(B, 1, 1)
+
+
 class SS2D(nn.Module):
     def __init__(
         self,
@@ -605,6 +655,9 @@ class SS2D(nn.Module):
         adaptive="no",
         use_defscan=False,
         defscan_scale="preserve",
+        defscan_gate=False,
+        defscan_gate_hidden=64,
+        defscan_gate_init=-1.5,
         stage_index=0,
         # ======================
         **kwargs,
@@ -627,6 +680,7 @@ class SS2D(nn.Module):
         self.base_scan_number = scan_number
         self.use_defscan = use_defscan
         self.defscan_scale = defscan_scale
+        self.defscan_gate_enabled = defscan_gate
         # disable z act ======================================
         self.disable_z_act = forward_type[-len("nozact") :] == "nozact"
         if self.disable_z_act:
@@ -661,6 +715,11 @@ class SS2D(nn.Module):
             else None
         )
         self.DR = DeformableLayerReverse() if self.use_defscan else None
+        self.defscan_gate = (
+            DefScanGate(d_inner, hidden=defscan_gate_hidden, init_bias=defscan_gate_init)
+            if self.use_defscan and self.defscan_gate_enabled
+            else None
+        )
         # print(self.K)
         # in proj =======================================
         self.in_proj = nn.Linear(d_model, d_expand * 2, bias=bias, **factory_kwargs)
@@ -974,6 +1033,10 @@ class SS2D(nn.Module):
         DR = getattr(self, "DR", None)
         if use_defscan and (DS is None or DR is None):
             use_defscan = False
+        defscan_gate = None
+        gate_fn = getattr(self, "defscan_gate", None)
+        if use_defscan and getattr(self, "defscan_gate_enabled", False) and gate_fn is not None:
+            defscan_gate = gate_fn(x, SNR)
 
         x = cross_selective_scan(
             x,
@@ -992,6 +1055,7 @@ class SS2D(nn.Module):
             snr=SNR,
             use_defscan=use_defscan,
             defscan_scale=getattr(self, "defscan_scale", "preserve"),
+            defscan_gate=defscan_gate,
             DS=DS,
             DR=DR,
         )
@@ -1133,6 +1197,9 @@ class VSSBlock(nn.Module):
         channel_adaptive="no",
         use_defscan=False,
         defscan_scale="preserve",
+        defscan_gate=False,
+        defscan_gate_hidden=64,
+        defscan_gate_init=-1.5,
         stage_index=0,
         **kwargs,
     ):
@@ -1166,6 +1233,9 @@ class VSSBlock(nn.Module):
                 adaptive=channel_adaptive,
                 use_defscan=use_defscan,
                 defscan_scale=defscan_scale,
+                defscan_gate=defscan_gate,
+                defscan_gate_hidden=defscan_gate_hidden,
+                defscan_gate_init=defscan_gate_init,
                 stage_index=stage_index,
             )
         self.extent = extent

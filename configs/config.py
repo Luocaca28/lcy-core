@@ -116,6 +116,9 @@ _C.MODEL.VSSM.Extent = 'conv'
 _C.MODEL.VSSM.channel_input = 'conv'
 _C.MODEL.VSSM.USE_DEFSCAN = False
 _C.MODEL.VSSM.DEFSCAN_SCALE = "preserve"
+_C.MODEL.VSSM.DEFSCAN_GATE = False
+_C.MODEL.VSSM.DEFSCAN_GATE_HIDDEN = 64
+_C.MODEL.VSSM.DEFSCAN_GATE_INIT = -1.5
 # -----------------------------------------------------------------------------
 # Training settings
 # -----------------------------------------------------------------------------

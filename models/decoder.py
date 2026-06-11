@@ -106,6 +106,9 @@ class Mamba_decoder(nn.Module):
         channel_input='conv',
         use_defscan=False,
         defscan_scale='preserve',
+        defscan_gate=False,
+        defscan_gate_hidden=64,
+        defscan_gate_init=-1.5,
         **kwargs,
     ):
         super().__init__()
@@ -218,6 +221,9 @@ class Mamba_decoder(nn.Module):
                 extent=extent,
                 use_defscan=use_defscan,
                 defscan_scale=defscan_scale,
+                defscan_gate=defscan_gate,
+                defscan_gate_hidden=defscan_gate_hidden,
+                defscan_gate_init=defscan_gate_init,
                 stage_index=self.num_layers - 1 - i_layer,
             ))
         
@@ -261,6 +267,8 @@ class Mamba_decoder(nn.Module):
 
     def _init_weights(self, m: nn.Module):
         if isinstance(m, nn.Linear):
+            if getattr(m, "_defscan_gate_final", False):
+                return
             trunc_normal_(m.weight, std=.02)
             if isinstance(m, nn.Linear) and m.bias is not None:
                 nn.init.constant_(m.bias, 0)
@@ -348,6 +356,9 @@ class Mamba_decoder(nn.Module):
         extent='no',
         use_defscan=False,
         defscan_scale='preserve',
+        defscan_gate=False,
+        defscan_gate_hidden=64,
+        defscan_gate_init=-1.5,
         stage_index=0,
         **kwargs,
     ):
@@ -384,6 +395,9 @@ class Mamba_decoder(nn.Module):
                 channel_adaptive=self.channel_adaptive,
                 use_defscan=use_defscan,
                 defscan_scale=defscan_scale,
+                defscan_gate=defscan_gate,
+                defscan_gate_hidden=defscan_gate_hidden,
+                defscan_gate_init=defscan_gate_init,
                 stage_index=stage_index,
             ))
         
@@ -612,7 +626,10 @@ def create_decoder(config):
         extent=config.MODEL.VSSM.Extent,
         channel_input=config.MODEL.VSSM.channel_input,
         use_defscan=config.MODEL.VSSM.USE_DEFSCAN,
-        defscan_scale=config.MODEL.VSSM.DEFSCAN_SCALE)
+        defscan_scale=config.MODEL.VSSM.DEFSCAN_SCALE,
+        defscan_gate=config.MODEL.VSSM.DEFSCAN_GATE,
+        defscan_gate_hidden=config.MODEL.VSSM.DEFSCAN_GATE_HIDDEN,
+        defscan_gate_init=config.MODEL.VSSM.DEFSCAN_GATE_INIT)
     
     model = Mamba_decoder(**decoder_kwargs)
     return model
