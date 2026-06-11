@@ -74,8 +74,8 @@ class DeformableLayer(nn.Module):
     @torch.no_grad()
     def _get_ref_points(self, H_key, W_key, B, dtype, device):
         ref_y, ref_x = torch.meshgrid(
-            torch.linspace(0.5, H_key - 0.5, H_key, dtype=dtype, device=device),
-            torch.linspace(0.5, W_key - 0.5, W_key, dtype=dtype, device=device),
+            torch.linspace(0, H_key - 1, H_key, dtype=dtype, device=device),
+            torch.linspace(0, W_key - 1, W_key, dtype=dtype, device=device),
             indexing="ij",
         )
         ref = torch.stack((ref_y, ref_x), -1)
@@ -86,8 +86,8 @@ class DeformableLayer(nn.Module):
     @torch.no_grad()
     def _get_key_ref_points(self, H, W, B, dtype, device):
         ref_y, ref_x = torch.meshgrid(
-            torch.linspace(0, H, H, dtype=dtype, device=device),
-            torch.linspace(0, W, W, dtype=dtype, device=device),
+            torch.linspace(0, H - 1, H, dtype=dtype, device=device),
+            torch.linspace(0, W - 1, W, dtype=dtype, device=device),
             indexing="ij",
         )
         ref = torch.stack((ref_y, ref_x), -1)
@@ -123,7 +123,7 @@ class DeformableLayer(nn.Module):
 
         de_index = de_index.tanh().flatten(1)
         path_reference = self._get_path_ref_points(N, B, dtype, device)
-        pos = offset + reference
+        pos = (offset + reference).clamp(-1.0, 1.0)
         path_pos = de_index + path_reference
 
         x_sampled = F.grid_sample(

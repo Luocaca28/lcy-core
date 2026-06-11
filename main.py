@@ -27,7 +27,7 @@ from fvcore.nn import FlopCountAnalysis, flop_count_str, flop_count
 
 from timm.utils import ModelEma as ModelEma
 from run.train import train_MambaJSCC
-from run.eval import eval_MambaJSCC
+from run.eval import test_MambaJSCC
 
 from utils.utils import GPUManager
 
@@ -42,7 +42,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_name", default="DIV2K")
     parser.add_argument("--project_path", default=os.path.dirname(os.path.abspath(__file__)))
-    parser.add_argument("--mode", default="test", choices=["train", "test", "eval"])
+    parser.add_argument("--mode", default="test", choices=["train", "test"])
     parsed = parser.parse_args()
     project_path = os.path.abspath(parsed.project_path)
     parsed.model_config_path = os.path.join(
@@ -67,12 +67,12 @@ def main(args):
         if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
             return
         seed_torch()
-        eval_MambaJSCC(config)
+        test_MambaJSCC(config)
         
-    elif args.mode in ['test', 'eval']:
+    elif args.mode == 'test':
 
         seed_torch()
-        eval_MambaJSCC(config)
+        test_MambaJSCC(config)
 
 if __name__ == "__main__":
     main(parse_args())

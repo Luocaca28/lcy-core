@@ -33,9 +33,9 @@ def _get_output_root(config):
     return os.path.dirname(os.path.normpath(log_dir))
 
 
-def _save_curve(snr_list, values, metric_name, log_dir):
-    csv_path = os.path.join(log_dir, f"snr_{metric_name.lower()}_curve.csv")
-    png_path = os.path.join(log_dir, f"snr_{metric_name.lower()}_curve.png")
+def _save_curve(snr_list, values, metric_name, log_dir, prefix="snr"):
+    csv_path = os.path.join(log_dir, f"{prefix}_{metric_name.lower()}_curve.csv")
+    png_path = os.path.join(log_dir, f"{prefix}_{metric_name.lower()}_curve.png")
 
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
@@ -60,10 +60,10 @@ def _save_curve(snr_list, values, metric_name, log_dir):
         print(f"Failed to save SNR curve plot: {exc}")
 
 
-def _save_eval_curves(snr_list, psnr_all, msssim_all, config):
+def _save_eval_curves(snr_list, psnr_all, msssim_all, config, prefix="snr"):
     log_dir = _get_log_dir(config)
-    _save_curve(snr_list, psnr_all, "PSNR", log_dir)
-    _save_curve(snr_list, msssim_all, "MS-SSIM", log_dir)
+    _save_curve(snr_list, psnr_all, "PSNR", log_dir, prefix=prefix)
+    _save_curve(snr_list, msssim_all, "MS-SSIM", log_dir, prefix=prefix)
 
 
 def _psnr_value(x, y):
@@ -84,47 +84,16 @@ def _target_name(target, index):
 
 
 @torch.no_grad()
-def eval_MambaJSCC(config):
-    _, test_loader = get_loader(config)
-
-    encoder_path = (
-        config.TRAIN.ENCODER_PATH
-        + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
-            config.MODEL.VSSM.OUT_CHANS,
-            config.MODEL.VSSM.Extent,
-            config.TRAIN.LOSS,
-            config.MODEL.VSSM.SCAN_NUMBER,
-            config.CHANNEL.SNR,
-            config.CHANNEL.ADAPTIVE,
-            config.CHANNEL.TYPE,
-            len(config.MODEL.VSSM.EMBED_DIM),
-            config.MODEL.VSSM.EMBED_DIM,
-            config.MODEL.VSSM.DEPTHS,
-            config.DATA.IMG_SIZE,
-        )
-        + ".pt"
-    )
-    decoder_path = (
-        config.TRAIN.DECODER_PATH
-        + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
-            config.MODEL.VSSM.OUT_CHANS,
-            config.MODEL.VSSM.Extent,
-            config.TRAIN.LOSS,
-            config.MODEL.VSSM.SCAN_NUMBER,
-            config.CHANNEL.SNR,
-            config.CHANNEL.ADAPTIVE,
-            config.CHANNEL.TYPE,
-            len(config.MODEL.VSSM.EMBED_DIM),
-            config.MODEL.VSSM.EMBED_DIM,
-            config.MODEL.VSSM.DEPTHS,
-            config.DATA.IMG_SIZE,
-        )
-        + ".pt"
-    )
-
-    encoder = torch.load(encoder_path, weights_only=False)
-    decoder = torch.load(decoder_path, weights_only=False)
-
+def eval_MambaJSCC_models(
+    config,
+    encoder,
+    decoder,
+    test_loader=None,
+    save_recon=True,
+    prefix="snr",
+):
+    if test_loader is None:
+        _, test_loader = get_loader(config)
     channel = Channel(config)
     B, C, H, W = next(iter(test_loader))[0].shape
     # test_mem_and_comp(config, encoder, decoder, input_size=(H, W))
@@ -139,7 +108,7 @@ def eval_MambaJSCC(config):
     # SNR_list = [20] #config.CHANNEL.SNR
     SNR_list = config.CHANNEL.SNR
     output_root = _get_output_root(config)
-    recon_root = os.path.join(output_root, "recon")
+    recon_root = os.path.join(output_root, "recon") if save_recon else None
     log_dir = _get_log_dir(config)
     print(
         "----------Evaluating: ls:128--OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
@@ -165,8 +134,9 @@ def eval_MambaJSCC(config):
         psnr_avg = 0
         msssim_avg = 0
         per_image_rows = []
-        recon_dir = os.path.join(recon_root, f"SNR_{SNR}")
-        os.makedirs(recon_dir, exist_ok=True)
+        if save_recon:
+            recon_dir = os.path.join(recon_root, f"SNR_{SNR}")
+            os.makedirs(recon_dir, exist_ok=True)
         seed_torch()
         with tqdm(test_loader, dynamic_ncols=False) as tqdmTestData:
             for i, (input_image, target) in enumerate(tqdmTestData):
@@ -210,11 +180,12 @@ def eval_MambaJSCC(config):
                     batch_psnr_values.append(psnr)
                     batch_msssim_values.append(msssim)
 
-                    name = _target_name(target, sample_idx)
-                    stem = os.path.splitext(os.path.basename(name))[0]
-                    recon_name = f"{stem}_SNR{SNR}_PSNR{psnr:.4f}_MSSSIM{msssim:.6f}.png"
-                    save_image(recon_sample.clamp(0.0, 1.0), os.path.join(recon_dir, recon_name))
-                    per_image_rows.append([name, SNR, psnr, msssim])
+                    if save_recon:
+                        name = _target_name(target, sample_idx)
+                        stem = os.path.splitext(os.path.basename(name))[0]
+                        recon_name = f"{stem}_SNR{SNR}_PSNR{psnr:.4f}_MSSSIM{msssim:.6f}.png"
+                        save_image(recon_sample.clamp(0.0, 1.0), os.path.join(recon_dir, recon_name))
+                        per_image_rows.append([name, SNR, psnr, msssim])
 
                 psnr_batch = sum(batch_psnr_values) / len(batch_psnr_values)
                 msssim_batch = sum(batch_msssim_values) / len(batch_msssim_values)
@@ -239,18 +210,71 @@ def eval_MambaJSCC(config):
         performance_all.append(performance_avg / (i + 1))
         psnr_all.append(psnr_avg / (i + 1))
         msssim_all.append(msssim_avg / (i + 1))
-        metric_csv = os.path.join(log_dir, f"per_image_metrics_SNR_{SNR}.csv")
-        with open(metric_csv, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["image", "snr", "psnr", "ms_ssim"])
-            writer.writerows(per_image_rows)
+        if save_recon:
+            metric_csv = os.path.join(log_dir, f"per_image_metrics_SNR_{SNR}.csv")
+            with open(metric_csv, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["image", "snr", "psnr", "ms_ssim"])
+                writer.writerows(per_image_rows)
 
     print(all_time / (len(SNR_list) * len(test_loader) * config.DATA.TEST_BATCH))
     print("SNRs:", SNR_list)
     print("performance:", performance_all)
     print("PSNR:", psnr_all)
     print("MS-SSIM:", msssim_all)
-    _save_eval_curves(SNR_list, psnr_all, msssim_all, config)
+    _save_eval_curves(SNR_list, psnr_all, msssim_all, config, prefix=prefix)
+    return performance_all, psnr_all, msssim_all
+
+
+@torch.no_grad()
+def test_MambaJSCC(config):
+    _, test_loader = get_loader(config)
+
+    encoder_path = (
+        config.TRAIN.ENCODER_PATH
+        + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
+            config.MODEL.VSSM.OUT_CHANS,
+            config.MODEL.VSSM.Extent,
+            config.TRAIN.LOSS,
+            config.MODEL.VSSM.SCAN_NUMBER,
+            config.CHANNEL.SNR,
+            config.CHANNEL.ADAPTIVE,
+            config.CHANNEL.TYPE,
+            len(config.MODEL.VSSM.EMBED_DIM),
+            config.MODEL.VSSM.EMBED_DIM,
+            config.MODEL.VSSM.DEPTHS,
+            config.DATA.IMG_SIZE,
+        )
+        + ".pt"
+    )
+    decoder_path = (
+        config.TRAIN.DECODER_PATH
+        + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
+            config.MODEL.VSSM.OUT_CHANS,
+            config.MODEL.VSSM.Extent,
+            config.TRAIN.LOSS,
+            config.MODEL.VSSM.SCAN_NUMBER,
+            config.CHANNEL.SNR,
+            config.CHANNEL.ADAPTIVE,
+            config.CHANNEL.TYPE,
+            len(config.MODEL.VSSM.EMBED_DIM),
+            config.MODEL.VSSM.EMBED_DIM,
+            config.MODEL.VSSM.DEPTHS,
+            config.DATA.IMG_SIZE,
+        )
+        + ".pt"
+    )
+
+    encoder = torch.load(encoder_path, weights_only=False)
+    decoder = torch.load(decoder_path, weights_only=False)
+    eval_MambaJSCC_models(
+        config,
+        encoder,
+        decoder,
+        test_loader=test_loader,
+        save_recon=True,
+        prefix="snr",
+    )
 
 
 def eval_MambaJSCC_with_SNR_error(config, mode=2):
