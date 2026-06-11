@@ -117,8 +117,9 @@ _C.MODEL.VSSM.channel_input = 'conv'
 _C.MODEL.VSSM.USE_DEFSCAN = False
 _C.MODEL.VSSM.DEFSCAN_SCALE = "preserve"
 _C.MODEL.VSSM.DEFSCAN_GATE = False
-_C.MODEL.VSSM.DEFSCAN_GATE_HIDDEN = 64
-_C.MODEL.VSSM.DEFSCAN_GATE_INIT = -1.5
+_C.MODEL.VSSM.DEFSCAN_GATE_HIDDEN = 32
+_C.MODEL.VSSM.DEFSCAN_GATE_INIT = -1.0
+_C.MODEL.VSSM.DEFSCAN_GATE_MODE = "learned"
 # -----------------------------------------------------------------------------
 # Training settings
 # -----------------------------------------------------------------------------
@@ -127,6 +128,7 @@ _C.TRAIN.START_EPOCH = 0
 _C.TRAIN.EPOCHS = 1
 _C.TRAIN.SAVE_FRE=1 
 _C.TRAIN.EVAL_FRE=10
+_C.TRAIN.DEBUG_GATE_GRAD_FRE=0
 _C.TRAIN.WARMUP_EPOCHS = 20
 _C.TRAIN.WEIGHT_DECAY = 0.05
 _C.TRAIN.BASE_LR = 1e-4 #5e-4

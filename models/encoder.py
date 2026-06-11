@@ -107,6 +107,7 @@ class Mamba_encoder(nn.Module):
         defscan_gate=False,
         defscan_gate_hidden=64,
         defscan_gate_init=-1.5,
+        defscan_gate_mode="learned",
         **kwargs,
     ):
         super().__init__()
@@ -221,6 +222,7 @@ class Mamba_encoder(nn.Module):
                 defscan_gate=defscan_gate,
                 defscan_gate_hidden=defscan_gate_hidden,
                 defscan_gate_init=defscan_gate_init,
+                defscan_gate_mode=defscan_gate_mode,
                 stage_index=i_layer,
             ))
         self.channel_input=channel_input
@@ -371,6 +373,7 @@ class Mamba_encoder(nn.Module):
         defscan_gate=False,
         defscan_gate_hidden=64,
         defscan_gate_init=-1.5,
+        defscan_gate_mode="learned",
         stage_index=0,
         **kwargs,
     ):
@@ -409,6 +412,7 @@ class Mamba_encoder(nn.Module):
                 defscan_gate=defscan_gate,
                 defscan_gate_hidden=defscan_gate_hidden,
                 defscan_gate_init=defscan_gate_init,
+                defscan_gate_mode=defscan_gate_mode,
                 stage_index=stage_index,
                 channel_adaptive=self.channel_adaptive,
 
@@ -507,7 +511,8 @@ def create_encoder(config):
         defscan_scale=config.MODEL.VSSM.DEFSCAN_SCALE,
         defscan_gate=config.MODEL.VSSM.DEFSCAN_GATE,
         defscan_gate_hidden=config.MODEL.VSSM.DEFSCAN_GATE_HIDDEN,
-        defscan_gate_init=config.MODEL.VSSM.DEFSCAN_GATE_INIT,)
+        defscan_gate_init=config.MODEL.VSSM.DEFSCAN_GATE_INIT,
+        defscan_gate_mode=config.MODEL.VSSM.DEFSCAN_GATE_MODE,)
     
     model = Mamba_encoder(**encoder_kwargs)
     return model

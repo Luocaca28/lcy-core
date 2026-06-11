@@ -50,7 +50,14 @@ def save_model(model, save_path):
     save_dir = os.path.dirname(save_path)
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
-    torch.save(model, save_path)
+    tmp_path = save_path + ".tmp"
+    try:
+        torch.save(model, tmp_path)
+        os.replace(tmp_path, save_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
 import os

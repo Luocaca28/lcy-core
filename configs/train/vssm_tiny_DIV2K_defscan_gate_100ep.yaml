@@ -2,6 +2,7 @@ TRAIN:
   EPOCHS: 100
   SAVE_FRE: 100
   EVAL_FRE: 10
+  DEBUG_GATE_GRAD_FRE: 100
   LOSS: 'PSNR'
   EVAL_MATRIX: 'PSNR'
   ENCODER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/DIV2K_defscan_gate_100ep_b4/encoder/'

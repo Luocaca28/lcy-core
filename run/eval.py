@@ -83,6 +83,22 @@ def _target_name(target, index):
     return str(target)
 
 
+def _eval_loss_value(config, recon_image, input_image, feature, msssim_calculator):
+    if config.TRAIN.LOSS == "PSNR":
+        return torch.nn.functional.mse_loss(
+            recon_image, input_image, reduction="sum"
+        ) / recon_image.shape[0]
+    if config.TRAIN.LOSS == "MSSSIM":
+        return (
+            msssim_calculator(recon_image.clamp(0.0, 1.0), input_image.clamp(0.0, 1.0)).mean()
+            * recon_image.numel()
+            / recon_image.shape[0]
+        )
+
+    criterion = loss_matrix(config)
+    return criterion(recon_image, input_image, feature, opt_idx=0, global_step=0)
+
+
 @torch.no_grad()
 def eval_MambaJSCC_models(
     config,
@@ -91,6 +107,7 @@ def eval_MambaJSCC_models(
     test_loader=None,
     save_recon=True,
     prefix="snr",
+    return_loss=False,
 ):
     if test_loader is None:
         _, test_loader = get_loader(config)
@@ -105,6 +122,7 @@ def eval_MambaJSCC_models(
     performance_all = []
     psnr_all = []
     msssim_all = []
+    loss_all = []
     # SNR_list = [20] #config.CHANNEL.SNR
     SNR_list = config.CHANNEL.SNR
     output_root = _get_output_root(config)
@@ -133,6 +151,7 @@ def eval_MambaJSCC_models(
         performance_avg = 0
         psnr_avg = 0
         msssim_avg = 0
+        loss_avg = 0
         per_image_rows = []
         if save_recon:
             recon_dir = os.path.join(recon_root, f"SNR_{SNR}")
@@ -169,6 +188,9 @@ def eval_MambaJSCC_models(
                 recon_image = decoder(received, SNR)
                 end_decocer = time.time()
                 all_time = all_time + end_encoder - start_encoder + end_decocer - start_decoder
+                loss_batch = _eval_loss_value(
+                    config, recon_image, input_image, feature, msssim_calculator
+                ).item()
 
                 batch_psnr_values = []
                 batch_msssim_values = []
@@ -196,9 +218,11 @@ def eval_MambaJSCC_models(
                 performance_avg = performance_avg + performance
                 psnr_avg = psnr_avg + psnr_batch
                 msssim_avg = msssim_avg + msssim_batch
+                loss_avg = loss_avg + loss_batch
                 tqdmTestData.set_postfix(
                     {
                         "matrix": performance,
+                        "loss": loss_batch,
                         "PSNR": psnr_batch,
                         "MS-SSIM": msssim_batch,
                         "CBR": CBR,
@@ -210,6 +234,7 @@ def eval_MambaJSCC_models(
         performance_all.append(performance_avg / (i + 1))
         psnr_all.append(psnr_avg / (i + 1))
         msssim_all.append(msssim_avg / (i + 1))
+        loss_all.append(loss_avg / (i + 1))
         if save_recon:
             metric_csv = os.path.join(log_dir, f"per_image_metrics_SNR_{SNR}.csv")
             with open(metric_csv, "w", newline="") as f:
@@ -222,7 +247,11 @@ def eval_MambaJSCC_models(
     print("performance:", performance_all)
     print("PSNR:", psnr_all)
     print("MS-SSIM:", msssim_all)
+    print("loss:", loss_all)
     _save_eval_curves(SNR_list, psnr_all, msssim_all, config, prefix=prefix)
+    avg_loss = sum(loss_all) / len(loss_all)
+    if return_loss:
+        return performance_all, psnr_all, msssim_all, avg_loss
     return performance_all, psnr_all, msssim_all
 
 

@@ -32,32 +32,39 @@ def _get_log_dir(config):
     return log_dir
 
 
-def _save_loss_curve(records, log_dir):
-    csv_path = os.path.join(log_dir, "loss_curve.csv")
-    png_path = os.path.join(log_dir, "loss_curve.png")
+def _save_train_val_loss_curve(train_records, val_records, log_dir):
+    csv_path = os.path.join(log_dir, "train_val_loss_curve.csv")
+    png_path = os.path.join(log_dir, "train_val_loss_curve.png")
+    val_by_epoch = {row[0]: row[1] for row in val_records}
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["epoch", "loss"])
-        writer.writerows(records)
+        writer.writerow(["epoch", "train_loss", "val_loss"])
+        for epoch, train_loss in train_records:
+            writer.writerow([epoch, train_loss, val_by_epoch.get(epoch, "")])
 
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        epochs = [row[0] for row in records]
-        losses = [row[1] for row in records]
+        train_epochs = [row[0] for row in train_records]
+        train_losses = [row[1] for row in train_records]
+        val_epochs = [row[0] for row in val_records]
+        val_losses = [row[1] for row in val_records]
         plt.figure()
-        plt.plot(epochs, losses, marker="o")
+        plt.plot(train_epochs, train_losses, label="train", marker="o", markersize=3)
+        if val_records:
+            plt.plot(val_epochs, val_losses, label="val", marker="o", markersize=4)
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
-        plt.title("Training Loss")
+        plt.title("Train/Val Loss")
         plt.grid(True)
+        plt.legend()
         plt.tight_layout()
         plt.savefig(png_path, dpi=200)
         plt.close()
     except Exception as exc:
-        print(f"Failed to save loss plot: {exc}")
+        print(f"Failed to save train/val loss plot: {exc}")
 
 
 def _maybe_data_parallel(model):
@@ -91,6 +98,20 @@ def _reduce_scalar(value, device):
     return tensor.item()
 
 
+def _check_gate_grad(model, tag):
+    model = _unwrap_parallel(model)
+    found = False
+    for name, p in model.named_parameters():
+        if "defscan_gate" not in name:
+            continue
+        found = True
+        grad = None if p.grad is None else p.grad.detach().abs().mean().item()
+        val = p.detach().abs().mean().item()
+        print(f"[{tag}] {name}: param_abs_mean={val:.6e}, grad_abs_mean={grad}")
+    if not found:
+        print(f"[{tag}] no defscan_gate params found")
+
+
 def _format_count(value):
     if value is None:
         return "N/A"
@@ -103,6 +124,22 @@ def _format_count(value):
     if value >= 1e3:
         return f"{value / 1e3:.3f} K"
     return str(value)
+
+
+def _clear_module_hooks(model):
+    for module in model.modules():
+        for hook_name in (
+            "_forward_hooks",
+            "_forward_pre_hooks",
+            "_backward_hooks",
+            "_backward_pre_hooks",
+            "_state_dict_hooks",
+            "_load_state_dict_pre_hooks",
+            "_load_state_dict_post_hooks",
+        ):
+            hooks = getattr(module, hook_name, None)
+            if hooks is not None:
+                hooks.clear()
 
 
 class _SNRForward(torch.nn.Module):
@@ -135,6 +172,8 @@ def _flops_of(model, input_tensor, snr):
         if input_tensor.is_cuda:
             torch.cuda.empty_cache()
         return None, {}, str(exc)
+    finally:
+        _clear_module_hooks(model)
 
 
 def _print_model_profile(config, encoder, decoder, device):
@@ -226,8 +265,10 @@ def train_MambaJSCC(config):
     #print("---training---, --- ")
     seed_torch()
     loss_records = []
+    val_loss_records = []
     log_dir = _get_log_dir(config)
     eval_fre = getattr(config.TRAIN, "EVAL_FRE", 10)
+    debug_gate_grad_fre = getattr(config.TRAIN, "DEBUG_GATE_GRAD_FRE", 0)
     for e in range(config.TRAIN.EPOCHS):
         if hasattr(train_loader.sampler, "set_epoch"):
             train_loader.sampler.set_epoch(e)
@@ -267,6 +308,14 @@ def train_MambaJSCC(config):
                 
                 loss = criterion(recon_image, input_image, feature,opt_idx=0, global_step=e)
                 loss.backward()
+                global_step = e * len(train_loader) + i
+                if (
+                    debug_gate_grad_fre > 0
+                    and global_step % debug_gate_grad_fre == 0
+                    and _is_main_process()
+                ):
+                    _check_gate_grad(encoder, "encoder")
+                    _check_gate_grad(decoder, "decoder")
 
                 performance=matrix(recon_image, input_image)
                 
@@ -309,14 +358,16 @@ def train_MambaJSCC(config):
                 print(f"----------validation after epoch {e + 1}----------")
                 encoder.eval()
                 decoder.eval()
-                eval_MambaJSCC_models(
+                _, _, _, val_loss = eval_MambaJSCC_models(
                     config,
                     _unwrap_parallel(encoder),
                     _unwrap_parallel(decoder),
                     test_loader=test_loader,
                     save_recon=False,
                     prefix=f"val_epoch_{e + 1:03d}_snr",
+                    return_loss=True,
                 )
+                val_loss_records.append([e + 1, val_loss])
                 encoder.train()
                 decoder.train()
             if distributed:
@@ -325,6 +376,6 @@ def train_MambaJSCC(config):
         save_model(_unwrap_parallel(encoder), save_path=config.TRAIN.ENCODER_PATH + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(config.MODEL.VSSM.OUT_CHANS,config.MODEL.VSSM.Extent,config.TRAIN.LOSS,config.MODEL.VSSM.SCAN_NUMBER,config.CHANNEL.SNR,config.CHANNEL.ADAPTIVE, config.CHANNEL.TYPE,len(config.MODEL.VSSM.EMBED_DIM), config.MODEL.VSSM.EMBED_DIM,config.MODEL.VSSM.DEPTHS,config.DATA.IMG_SIZE) + '.pt')
         save_model(_unwrap_parallel(decoder), save_path=config.TRAIN.DECODER_PATH + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(config.MODEL.VSSM.OUT_CHANS,config.MODEL.VSSM.Extent,config.TRAIN.LOSS,config.MODEL.VSSM.SCAN_NUMBER,config.CHANNEL.SNR,config.CHANNEL.ADAPTIVE, config.CHANNEL.TYPE,len(config.MODEL.VSSM.EMBED_DIM), config.MODEL.VSSM.EMBED_DIM,config.MODEL.VSSM.DEPTHS,config.DATA.IMG_SIZE) + '.pt')
     if _is_main_process():
-        _save_loss_curve(loss_records, log_dir)
+        _save_train_val_loss_curve(loss_records, val_loss_records, log_dir)
     if distributed:
         dist.barrier()
