@@ -105,7 +105,7 @@ class Mamba_decoder(nn.Module):
         extent='no',
         channel_input='conv',
         use_defscan=False,
-        defscan_scale='preserve',
+        defscan_def_init=0.05,
         **kwargs,
     ):
         super().__init__()
@@ -217,7 +217,7 @@ class Mamba_decoder(nn.Module):
                 scan_number=scan_number,
                 extent=extent,
                 use_defscan=use_defscan,
-                defscan_scale=defscan_scale,
+                defscan_def_init=defscan_def_init,
                 stage_index=self.num_layers - 1 - i_layer,
             ))
         
@@ -347,7 +347,7 @@ class Mamba_decoder(nn.Module):
         scan_number=4,
         extent='no',
         use_defscan=False,
-        defscan_scale='preserve',
+        defscan_def_init=0.05,
         stage_index=0,
         **kwargs,
     ):
@@ -383,7 +383,7 @@ class Mamba_decoder(nn.Module):
                 extent=extent,
                 channel_adaptive=self.channel_adaptive,
                 use_defscan=use_defscan,
-                defscan_scale=defscan_scale,
+                defscan_def_init=defscan_def_init,
                 stage_index=stage_index,
             ))
         
@@ -612,7 +612,7 @@ def create_decoder(config):
         extent=config.MODEL.VSSM.Extent,
         channel_input=config.MODEL.VSSM.channel_input,
         use_defscan=config.MODEL.VSSM.USE_DEFSCAN,
-        defscan_scale=config.MODEL.VSSM.DEFSCAN_SCALE)
+        defscan_def_init=getattr(config.MODEL.VSSM, "DEFSCAN_DEF_INIT", 0.05))
     
     model = Mamba_decoder(**decoder_kwargs)
     return model

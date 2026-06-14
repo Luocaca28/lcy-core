@@ -23,12 +23,14 @@ def check_config(project_path, config_name):
     config = get_config(build_config_args(project_path, config_name))
     print("SCAN_NUMBER:", config.MODEL.VSSM.SCAN_NUMBER)
     print("USE_DEFSCAN:", config.MODEL.VSSM.USE_DEFSCAN)
-    print("DEFSCAN_SCALE:", config.MODEL.VSSM.DEFSCAN_SCALE)
+    print(
+        "DEFSCAN_DEF_INIT:",
+        getattr(config.MODEL.VSSM, "DEFSCAN_DEF_INIT", 0.05),
+    )
 
     if config_name.endswith("defscan"):
         assert config.MODEL.VSSM.SCAN_NUMBER == 2
         assert config.MODEL.VSSM.USE_DEFSCAN is True
-        assert config.MODEL.VSSM.DEFSCAN_SCALE == "preserve"
     return config
 
 
@@ -103,6 +105,19 @@ def check_model_forward(config, device, image_size, snr, full_channel):
 
     loss = (recon - x).pow(2).mean()
     loss.backward()
+    tri_params = [
+        (name, param)
+        for name, param in list(encoder.named_parameters()) + list(decoder.named_parameters())
+        if "tri_merge" in name
+    ]
+    if config.MODEL.VSSM.USE_DEFSCAN:
+        assert tri_params, "tri_merge parameters were not registered"
+        grad_seen = False
+        for name, param in tri_params[:8]:
+            grad = None if param.grad is None else param.grad.detach().abs().mean().item()
+            print("tri_grad:", name, grad)
+            grad_seen = grad_seen or grad is not None
+        assert grad_seen, "tri_merge parameters did not receive gradients"
     print("model forward/backward ok")
 
 

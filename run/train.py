@@ -32,27 +32,34 @@ def _get_log_dir(config):
     return log_dir
 
 
-def _save_loss_curve(records, log_dir):
+def _save_loss_curve(train_records, val_records, log_dir):
     csv_path = os.path.join(log_dir, "loss_curve.csv")
     png_path = os.path.join(log_dir, "loss_curve.png")
+    val_by_epoch = {row[0]: row[1] for row in val_records}
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["epoch", "loss"])
-        writer.writerows(records)
+        writer.writerow(["epoch", "train_loss", "val_loss"])
+        for epoch, train_loss in train_records:
+            writer.writerow([epoch, train_loss, val_by_epoch.get(epoch, "")])
 
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        epochs = [row[0] for row in records]
-        losses = [row[1] for row in records]
+        train_epochs = [row[0] for row in train_records]
+        train_losses = [row[1] for row in train_records]
+        val_epochs = [row[0] for row in val_records]
+        val_losses = [row[1] for row in val_records]
         plt.figure()
-        plt.plot(epochs, losses, marker="o")
+        plt.plot(train_epochs, train_losses, marker="o", label="train")
+        if val_records:
+            plt.plot(val_epochs, val_losses, marker="s", label="val")
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
-        plt.title("Training Loss")
+        plt.title("Train/Val Loss")
         plt.grid(True)
+        plt.legend()
         plt.tight_layout()
         plt.savefig(png_path, dpi=200)
         plt.close()
@@ -66,6 +73,49 @@ def _maybe_data_parallel(model):
 
 def _unwrap_parallel(model):
     return model.module if isinstance(model, (torch.nn.DataParallel, DDP)) else model
+
+
+def _split_tri_merge_params(model):
+    base_params = []
+    tri_params = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if "tri_merge" in name:
+            tri_params.append(param)
+        else:
+            base_params.append(param)
+    return base_params, tri_params
+
+
+def _build_adamw_with_tri_merge(model, base_lr, weight_decay, tri_lr_mult):
+    base_params, tri_params = _split_tri_merge_params(model)
+    groups = [{"params": base_params, "lr": base_lr, "weight_decay": weight_decay}]
+    if tri_params:
+        groups.append(
+            {
+                "params": tri_params,
+                "lr": base_lr * tri_lr_mult,
+                "weight_decay": 0.0,
+            }
+        )
+    return optim.AdamW(groups)
+
+
+def _print_optimizer_groups(name, optimizer):
+    for idx, group in enumerate(optimizer.param_groups):
+        print(
+            f"{name} group {idx}: lr={group['lr']} "
+            f"wd={group.get('weight_decay', 0.0)} n_params={len(group['params'])}"
+        )
+
+
+def _inspect_tri_merge_grad(model, tag):
+    for name, param in model.named_parameters():
+        if "tri_merge" not in name:
+            continue
+        grad = None if param.grad is None else param.grad.detach().abs().mean().item()
+        print(f"[{tag}] {name}: grad_mean={grad}")
 
 
 def _setup_distributed():
@@ -183,7 +233,10 @@ def train_MambaJSCC(config):
     
 
     distributed, rank, local_rank = _setup_distributed()
-    train_loader, test_loader = get_loader(config)
+    val_data_dir = getattr(config.DATA, "val_data_dir", config.DATA.test_data_dir)
+    if _is_main_process():
+        print(f"Validation data dir: {val_data_dir}")
+    train_loader, val_loader = get_loader(config, test_data_dir=val_data_dir)
     device = torch.device("cuda", local_rank) if distributed else torch.device("cuda")
     encoder=Mamba_encoder(config).to(device)
     decoder=Mamba_decoder(config).to(device)
@@ -198,8 +251,16 @@ def train_MambaJSCC(config):
         dist.barrier()
 
     
-    optimizer_encoder = optim.AdamW(encoder.parameters(), lr=config.TRAIN.BASE_LR, weight_decay=1e-4)
-    optimizer_decoder = optim.AdamW(decoder.parameters(), lr=config.TRAIN.BASE_LR, weight_decay=1e-4)
+    tri_lr_mult = getattr(config.MODEL.VSSM, "TRI_MERGE_LR_MULT", 1.0)
+    optimizer_encoder = _build_adamw_with_tri_merge(
+        encoder, config.TRAIN.BASE_LR, 1e-4, tri_lr_mult
+    )
+    optimizer_decoder = _build_adamw_with_tri_merge(
+        decoder, config.TRAIN.BASE_LR, 1e-4, tri_lr_mult
+    )
+    if _is_main_process():
+        _print_optimizer_groups("encoder", optimizer_encoder)
+        _print_optimizer_groups("decoder", optimizer_decoder)
 
     cosineScheduler_encoder = optim.lr_scheduler.CosineAnnealingLR(
         optimizer=optimizer_encoder, T_max=config.TRAIN.EPOCHS, eta_min=0, last_epoch=-1)
@@ -226,6 +287,7 @@ def train_MambaJSCC(config):
     #print("---training---, --- ")
     seed_torch()
     loss_records = []
+    val_loss_records = []
     log_dir = _get_log_dir(config)
     eval_fre = getattr(config.TRAIN, "EVAL_FRE", 10)
     for e in range(config.TRAIN.EPOCHS):
@@ -267,6 +329,9 @@ def train_MambaJSCC(config):
                 
                 loss = criterion(recon_image, input_image, feature,opt_idx=0, global_step=e)
                 loss.backward()
+                if getattr(config.MODEL.VSSM, "TRI_MERGE_DEBUG", False) and _is_main_process() and i == 0:
+                    _inspect_tri_merge_grad(encoder, f"epoch {e} encoder")
+                    _inspect_tri_merge_grad(decoder, f"epoch {e} decoder")
 
                 performance=matrix(recon_image, input_image)
                 
@@ -287,7 +352,7 @@ def train_MambaJSCC(config):
                     'matrix':performance,
                     'CBR':CBR,
                     'SNR':SNR,
-                    "LR": (optimizer_encoder.state_dict()['param_groups'][0]["lr"],optimizer_encoder.state_dict()['param_groups'][0]["lr"])
+                    "LR": tuple(group["lr"] for group in optimizer_encoder.param_groups)
                 }
                     )
 
@@ -302,21 +367,30 @@ def train_MambaJSCC(config):
             # save_model(decoder, save_path=config.TRAIN.DECODER_PATH + "ls32_OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(config.MODEL.VSSM.OUT_CHANS,config.MODEL.VSSM.Extent,config.TRAIN.LOSS,config.MODEL.VSSM.SCAN_NUMBER,config.CHANNEL.SNR,config.CHANNEL.ADAPTIVE, config.CHANNEL.TYPE,len(config.MODEL.VSSM.EMBED_DIM), config.MODEL.VSSM.EMBED_DIM,config.MODEL.VSSM.DEPTHS,config.DATA.IMG_SIZE) + '.pt')
             save_model(_unwrap_parallel(encoder), save_path=config.TRAIN.ENCODER_PATH + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(config.MODEL.VSSM.OUT_CHANS,config.MODEL.VSSM.Extent,config.TRAIN.LOSS,config.MODEL.VSSM.SCAN_NUMBER,config.CHANNEL.SNR,config.CHANNEL.ADAPTIVE, config.CHANNEL.TYPE,len(config.MODEL.VSSM.EMBED_DIM), config.MODEL.VSSM.EMBED_DIM,config.MODEL.VSSM.DEPTHS,config.DATA.IMG_SIZE) + '.pt')
             save_model(_unwrap_parallel(decoder), save_path=config.TRAIN.DECODER_PATH + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(config.MODEL.VSSM.OUT_CHANS,config.MODEL.VSSM.Extent,config.TRAIN.LOSS,config.MODEL.VSSM.SCAN_NUMBER,config.CHANNEL.SNR,config.CHANNEL.ADAPTIVE, config.CHANNEL.TYPE,len(config.MODEL.VSSM.EMBED_DIM), config.MODEL.VSSM.EMBED_DIM,config.MODEL.VSSM.DEPTHS,config.DATA.IMG_SIZE) + '.pt')
-        if eval_fre > 0 and (e + 1) % eval_fre == 0:
+        run_validation = eval_fre > 0 and (
+            (e + 1) % eval_fre == 0 or (e + 1) == config.TRAIN.EPOCHS
+        )
+        if run_validation:
             if distributed:
                 dist.barrier()
             if _is_main_process():
                 print(f"----------validation after epoch {e + 1}----------")
                 encoder.eval()
                 decoder.eval()
-                eval_MambaJSCC_models(
+                save_final_val_curves = (e + 1) == config.TRAIN.EPOCHS
+                _, _, _, val_loss = eval_MambaJSCC_models(
                     config,
                     _unwrap_parallel(encoder),
                     _unwrap_parallel(decoder),
-                    test_loader=test_loader,
+                    test_loader=val_loader,
                     save_recon=False,
+                    save_curves=save_final_val_curves,
                     prefix=f"val_epoch_{e + 1:03d}_snr",
+                    criterion=criterion,
+                    global_step=e,
                 )
+                if val_loss is not None:
+                    val_loss_records.append([e + 1, val_loss])
                 encoder.train()
                 decoder.train()
             if distributed:
@@ -325,6 +399,6 @@ def train_MambaJSCC(config):
         save_model(_unwrap_parallel(encoder), save_path=config.TRAIN.ENCODER_PATH + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(config.MODEL.VSSM.OUT_CHANS,config.MODEL.VSSM.Extent,config.TRAIN.LOSS,config.MODEL.VSSM.SCAN_NUMBER,config.CHANNEL.SNR,config.CHANNEL.ADAPTIVE, config.CHANNEL.TYPE,len(config.MODEL.VSSM.EMBED_DIM), config.MODEL.VSSM.EMBED_DIM,config.MODEL.VSSM.DEPTHS,config.DATA.IMG_SIZE) + '.pt')
         save_model(_unwrap_parallel(decoder), save_path=config.TRAIN.DECODER_PATH + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(config.MODEL.VSSM.OUT_CHANS,config.MODEL.VSSM.Extent,config.TRAIN.LOSS,config.MODEL.VSSM.SCAN_NUMBER,config.CHANNEL.SNR,config.CHANNEL.ADAPTIVE, config.CHANNEL.TYPE,len(config.MODEL.VSSM.EMBED_DIM), config.MODEL.VSSM.EMBED_DIM,config.MODEL.VSSM.DEPTHS,config.DATA.IMG_SIZE) + '.pt')
     if _is_main_process():
-        _save_loss_curve(loss_records, log_dir)
+        _save_loss_curve(loss_records, val_loss_records, log_dir)
     if distributed:
         dist.barrier()

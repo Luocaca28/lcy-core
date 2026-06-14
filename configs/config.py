@@ -32,6 +32,7 @@ _C.DATA.DATASET = 'DIV2K' #'imagenet'
 _C.DATA.IMG_SIZE = 256
 # path
 _C.DATA.train_data_dir= r"/mnt/wutong/datasets/DIV2K/DIV2K_train_HR"
+_C.DATA.val_data_dir= r"/mnt/wutong/datasets/DIV2K/DIV2K_valid_HR"
 _C.DATA.test_data_dir= r"/mnt/wutong/datasets/DIV2K/DIV2K_valid_HR"
 # Interpolation to resize image (random, bilinear, bicubic)
 _C.DATA.INTERPOLATION = 'bicubic'
@@ -115,7 +116,9 @@ _C.MODEL.VSSM.SCAN_NUMBER = 4
 _C.MODEL.VSSM.Extent = 'conv'
 _C.MODEL.VSSM.channel_input = 'conv'
 _C.MODEL.VSSM.USE_DEFSCAN = False
-_C.MODEL.VSSM.DEFSCAN_SCALE = "preserve"
+_C.MODEL.VSSM.DEFSCAN_DEF_INIT = 0.05
+_C.MODEL.VSSM.TRI_MERGE_LR_MULT = 3.0
+_C.MODEL.VSSM.TRI_MERGE_DEBUG = False
 # -----------------------------------------------------------------------------
 # Training settings
 # -----------------------------------------------------------------------------

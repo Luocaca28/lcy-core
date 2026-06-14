@@ -97,7 +97,8 @@ class Datasets_train(Dataset):
         return len(self.imgs)
 
 
-def get_loader(config):
+def get_loader(config, test_data_dir=None):
+    eval_data_dir = test_data_dir or config.DATA.test_data_dir
 
     if config.DATA.DATASET == "CIFAR10":
         transform_train = transforms.Compose(
@@ -110,7 +111,7 @@ def get_loader(config):
         )
 
         test_dataset = datasets.CIFAR10(
-            root=config.DATA.test_data_dir, train=False, transform=transform_test, download=False
+            root=eval_data_dir, train=False, transform=transform_test, download=False
         )
     elif config.DATA.DATASET == "DIV2K":
         transform_train = transforms.Compose(
@@ -134,7 +135,7 @@ def get_loader(config):
         )
         # test_dataset = Datasets(data_dir=config.DATA.test_data_dir)
         test_dataset = datasets.ImageFolder(
-            root=config.DATA.test_data_dir, transform=transform_test
+            root=eval_data_dir, transform=transform_test
         )
     elif config.DATA.DATASET in ["CelebA", "CelebA-HQ", "AFHQ", "Bird"]:
         transform_train = transforms.Compose(
@@ -155,7 +156,7 @@ def get_loader(config):
         )
 
         test_dataset = datasets.ImageFolder(
-            root=config.DATA.test_data_dir, transform=transform_test
+            root=eval_data_dir, transform=transform_test
         )
 
     elif config.DATA.DATASET in ["Kodak", "CLIC2021", "OpenImg", "DIV2K_Kodak"]:
@@ -177,7 +178,7 @@ def get_loader(config):
             data_dir=config.DATA.train_data_dir, img_size=config.DATA.IMG_SIZE
         )
 
-        test_dataset = Datasets(config.DATA.test_data_dir)
+        test_dataset = Datasets(eval_data_dir)
     # print(NUM_DATASET_WORKERS)
     # seed_torch()
     if dist.is_available() and dist.is_initialized():

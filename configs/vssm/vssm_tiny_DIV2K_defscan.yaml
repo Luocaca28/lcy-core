@@ -12,4 +12,6 @@ MODEL:
     Extent: 'MLP'
     channel_input: 'conv'
     USE_DEFSCAN: True
-    DEFSCAN_SCALE: 'preserve'
+    DEFSCAN_DEF_INIT: 0.05
+    TRI_MERGE_LR_MULT: 3.0
+    TRI_MERGE_DEBUG: False

@@ -338,30 +338,48 @@ class CrossMerge2(torch.autograd.Function):
         return xs, None, None
 
 
-def cross_merge_with_def(ys, indices, DR, scan_number=2, defscan_scale="preserve"):
+class TriPathProjectMerge(nn.Module):
+    def __init__(self, dim, def_init=0.05, use_def_norm=True):
+        super().__init__()
+        self.dim = dim
+        self.use_def_norm = use_def_norm
+        self.def_norm = nn.LayerNorm(dim) if use_def_norm else nn.Identity()
+        self.proj = nn.Conv1d(3 * dim, dim, kernel_size=1, bias=False)
+        self.reset_parameters(def_init)
+
+    def reset_parameters(self, def_init=0.05):
+        with torch.no_grad():
+            self.proj.weight.zero_()
+            eye = torch.eye(
+                self.dim,
+                dtype=self.proj.weight.dtype,
+                device=self.proj.weight.device,
+            ).view(self.dim, self.dim, 1)
+            self.proj.weight[:, 0 * self.dim : 1 * self.dim, :] = eye
+            self.proj.weight[:, 1 * self.dim : 2 * self.dim, :] = eye
+            self.proj.weight[:, 2 * self.dim : 3 * self.dim, :] = def_init * eye
+
+    def forward(self, y0, y1, yd):
+        assert y0.shape == y1.shape == yd.shape, (y0.shape, y1.shape, yd.shape)
+        assert y0.shape[1] == self.dim, (y0.shape, self.dim)
+        if self.use_def_norm:
+            yd = self.def_norm(yd.transpose(1, 2)).transpose(1, 2).contiguous()
+        y = torch.cat([y0, y1, yd], dim=1)
+        return self.proj(y)
+
+
+def cross_merge3_with_def(ys, indices, DR, tri_merge, scan_number=2):
     B, K, C, H, W = ys.shape
     L = H * W
-    expected_k = scan_number + 1
-    assert K == expected_k, f"Expected K={expected_k}, got K={K}"
+    assert scan_number == 2, "tri-path merge currently assumes CrossScan2 + Def path"
+    assert K == 3, f"Def-CrossScan3 expects exactly 3 paths, got K={K}"
+    assert tri_merge is not None, "tri_merge is required for tri-path merge"
 
-    if scan_number == 2:
-        y_base = CrossMerge2.apply(ys[:, :2])
-    elif scan_number == 4:
-        y_base = CrossMerge.apply(ys[:, :4])
-    else:
-        raise ValueError("scan number error")
-
-    y_def = ys[:, scan_number].contiguous().view(B, C, L)
-    y_def = DR(y_def, indices)
-    assert y_base.shape == y_def.shape, (
-        f"merge shape mismatch: y_base={y_base.shape}, y_def={y_def.shape}"
-    )
-
-    if defscan_scale == "preserve":
-        return (y_base + y_def) * (float(scan_number) / float(scan_number + 1))
-    if defscan_scale == "sum":
-        return y_base + y_def
-    raise ValueError(f"Unknown DEFSCAN_SCALE: {defscan_scale}")
+    ys = ys.contiguous().view(B, K, C, L)
+    y0 = ys[:, 0].contiguous()
+    y1 = ys[:, 1].flip(dims=[-1]).contiguous()
+    yd = DR(ys[:, 2].contiguous(), indices)
+    return tri_merge(y0, y1, yd)
 
 
 def cross_selective_scan(
@@ -383,9 +401,9 @@ def cross_selective_scan(
     adaptive="no",
     snr=10,
     use_defscan=False,
-    defscan_scale="preserve",
     DS=None,
     DR=None,
+    tri_merge=None,
     InvertScan=None,
     InvertMerge=None,
 ):
@@ -488,8 +506,8 @@ def cross_selective_scan(
     ).view(B, K_runtime, -1, H, W)
     # if scan=="cross":
     if use_defscan:
-        y: torch.Tensor = cross_merge_with_def(
-            ys, indices, DR, scan_number=scan_number, defscan_scale=defscan_scale
+        y: torch.Tensor = cross_merge3_with_def(
+            ys, indices, DR, tri_merge=tri_merge, scan_number=scan_number
         )
     else:
         if scan_number == 2:
@@ -604,7 +622,7 @@ class SS2D(nn.Module):
         scan_number=4,
         adaptive="no",
         use_defscan=False,
-        defscan_scale="preserve",
+        defscan_def_init=0.05,
         stage_index=0,
         # ======================
         **kwargs,
@@ -620,13 +638,14 @@ class SS2D(nn.Module):
         super().__init__()
         d_expand = int(ssm_ratio * d_model)
         d_inner = int(min(ssm_rank_ratio, ssm_ratio) * d_model) if ssm_rank_ratio > 0 else d_expand
+        self.d_inner = d_inner
         self.dt_rank = math.ceil(d_model / 16) if dt_rank == "auto" else dt_rank
         self.d_state = math.ceil(d_model / 6) if d_state == "auto" else d_state  # 20240109
         self.d_conv = d_conv
         self.scan_number = scan_number
         self.base_scan_number = scan_number
         self.use_defscan = use_defscan
-        self.defscan_scale = defscan_scale
+        self.defscan_def_init = defscan_def_init
         # disable z act ======================================
         self.disable_z_act = forward_type[-len("nozact") :] == "nozact"
         if self.disable_z_act:
@@ -661,6 +680,14 @@ class SS2D(nn.Module):
             else None
         )
         self.DR = DeformableLayerReverse() if self.use_defscan else None
+        if self.use_defscan:
+            self.tri_merge = TriPathProjectMerge(
+                dim=d_inner,
+                def_init=defscan_def_init,
+                use_def_norm=True,
+            )
+        else:
+            self.tri_merge = None
         # print(self.K)
         # in proj =======================================
         self.in_proj = nn.Linear(d_model, d_expand * 2, bias=bias, **factory_kwargs)
@@ -991,9 +1018,9 @@ class SS2D(nn.Module):
             adaptive=self.adaptive,
             snr=SNR,
             use_defscan=use_defscan,
-            defscan_scale=getattr(self, "defscan_scale", "preserve"),
             DS=DS,
             DR=DR,
+            tri_merge=getattr(self, "tri_merge", None),
         )
 
         if self.ssm_low_rank:
@@ -1132,7 +1159,7 @@ class VSSBlock(nn.Module):
         extent="no",
         channel_adaptive="no",
         use_defscan=False,
-        defscan_scale="preserve",
+        defscan_def_init=0.05,
         stage_index=0,
         **kwargs,
     ):
@@ -1165,7 +1192,7 @@ class VSSBlock(nn.Module):
                 scan_number=scan_number,
                 adaptive=channel_adaptive,
                 use_defscan=use_defscan,
-                defscan_scale=defscan_scale,
+                defscan_def_init=defscan_def_init,
                 stage_index=stage_index,
             )
         self.extent = extent
