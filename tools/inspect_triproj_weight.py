@@ -1,4 +1,5 @@
 import argparse
+import csv
 import os
 import sys
 import torch
@@ -16,6 +17,7 @@ def _offdiag_abs_mean(matrix):
 
 def inspect_model(model, label):
     found = False
+    rows = []
     for name, module in model.named_modules():
         if "tri_merge" not in name or not hasattr(module, "proj"):
             continue
@@ -40,20 +42,52 @@ def inspect_model(model, label):
             print(f"{tag} abs mean:", block.abs().mean().item())
             print(f"{tag} diag mean:", block.diag().mean().item())
             print(f"{tag} offdiag abs mean:", _offdiag_abs_mean(block))
+        base_abs = 0.5 * (w0.abs().mean().item() + w1.abs().mean().item())
+        wd_abs = wd.abs().mean().item()
+        rows.append(
+            {
+                "checkpoint": label,
+                "module": name,
+                "W0_abs_mean": w0.abs().mean().item(),
+                "W0_diag_mean": w0.diag().mean().item(),
+                "W0_offdiag_abs_mean": _offdiag_abs_mean(w0),
+                "W1_abs_mean": w1.abs().mean().item(),
+                "W1_diag_mean": w1.diag().mean().item(),
+                "W1_offdiag_abs_mean": _offdiag_abs_mean(w1),
+                "Wd_abs_mean": wd_abs,
+                "Wd_diag_mean": wd.diag().mean().item(),
+                "Wd_offdiag_abs_mean": _offdiag_abs_mean(wd),
+                "Wd_to_base_abs_ratio": wd_abs / (base_abs + 1e-12),
+            }
+        )
 
     if not found:
         print(f"[{label}] no tri_merge modules found")
+    return rows
+
+
+def save_rows(rows, output):
+    if not output or not rows:
+        return
+    os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
+    with open(output, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("checkpoints", nargs="+")
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
+    all_rows = []
     for path in args.checkpoints:
         model = torch.load(path, map_location=args.device, weights_only=False)
-        inspect_model(model, path)
+        all_rows.extend(inspect_model(model, path))
+    save_rows(all_rows, args.output)
 
 
 if __name__ == "__main__":

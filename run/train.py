@@ -67,6 +67,88 @@ def _save_loss_curve(train_records, val_records, log_dir):
         print(f"Failed to save loss plot: {exc}")
 
 
+def _collect_tri_path_weight_stats(model, prefix):
+    diag_values = []
+    offdiag_values = []
+    abs_values = []
+    base_abs_values = []
+    for name, module in _unwrap_parallel(model).named_modules():
+        if "tri_merge" not in name or not hasattr(module, "proj"):
+            continue
+        weight = module.proj.weight.detach()
+        out_channels, in_channels, kernel = weight.shape
+        if kernel != 1 or in_channels != 3 * out_channels:
+            continue
+        c = out_channels
+        w0 = weight[:, 0 * c : 1 * c, 0]
+        w1 = weight[:, 1 * c : 2 * c, 0]
+        wd = weight[:, 2 * c : 3 * c, 0]
+        wd_diag = torch.diag(wd).mean()
+        wd_offdiag = (wd - torch.diag(torch.diag(wd))).abs().mean()
+        wd_abs = wd.abs().mean()
+        base_abs = 0.5 * (w0.abs().mean() + w1.abs().mean())
+        diag_values.append(wd_diag)
+        offdiag_values.append(wd_offdiag)
+        abs_values.append(wd_abs)
+        base_abs_values.append(base_abs)
+
+    if not abs_values:
+        return {
+            f"{prefix}_wd_diag_mean": "",
+            f"{prefix}_wd_offdiag_abs_mean": "",
+            f"{prefix}_wd_abs_mean": "",
+            f"{prefix}_wd_to_base_abs_ratio": "",
+        }
+
+    wd_diag_mean = torch.stack(diag_values).mean().item()
+    wd_offdiag_mean = torch.stack(offdiag_values).mean().item()
+    wd_abs_mean = torch.stack(abs_values).mean().item()
+    base_abs_mean = torch.stack(base_abs_values).mean().item()
+    return {
+        f"{prefix}_wd_diag_mean": wd_diag_mean,
+        f"{prefix}_wd_offdiag_abs_mean": wd_offdiag_mean,
+        f"{prefix}_wd_abs_mean": wd_abs_mean,
+        f"{prefix}_wd_to_base_abs_ratio": wd_abs_mean / (base_abs_mean + 1e-12),
+    }
+
+
+def _save_tri_path_weight_curve(records, log_dir):
+    if not records:
+        return
+    csv_path = os.path.join(log_dir, "tri_path_weight_curve.csv")
+    png_path = os.path.join(log_dir, "tri_path_weight_curve.png")
+    fieldnames = list(records[0].keys())
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(records)
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        epochs = [row["epoch"] for row in records]
+        plt.figure()
+        for key in fieldnames:
+            if key == "epoch":
+                continue
+            values = [row[key] for row in records]
+            if any(value == "" for value in values):
+                continue
+            plt.plot(epochs, values, marker="o", label=key)
+        plt.xlabel("Epoch")
+        plt.ylabel("Tri-path weight statistic")
+        plt.title("Third Path Weight Curve")
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(png_path, dpi=200)
+        plt.close()
+    except Exception as exc:
+        print(f"Failed to save tri-path weight plot: {exc}")
+
+
 def _maybe_data_parallel(model):
     return model
 
@@ -155,6 +237,20 @@ def _format_count(value):
     return str(value)
 
 
+def _format_count_with_commas(value):
+    return "N/A" if value is None else f"{value:,}"
+
+
+def _count_params(model):
+    total = sum(param.numel() for param in model.parameters())
+    trainable = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    return total, trainable
+
+
+def _param_memory_mb(model):
+    return sum(param.numel() * param.element_size() for param in model.parameters()) / (1024 ** 2)
+
+
 class _SNRForward(torch.nn.Module):
     def __init__(self, model, snr):
         super().__init__()
@@ -203,6 +299,12 @@ def _print_model_profile(config, encoder, decoder, device):
     feature = None
     decoder_input = None
     try:
+        enc_params, _ = _count_params(encoder)
+        dec_params, _ = _count_params(decoder)
+        total_params = enc_params + dec_params
+        enc_param_mem = _param_memory_mb(encoder)
+        dec_param_mem = _param_memory_mb(decoder)
+
         input_tensor = torch.randn(1, 3, image_size, image_size, device=device)
         with torch.no_grad():
             feature = encoder(input_tensor, profile_snr)
@@ -214,6 +316,14 @@ def _print_model_profile(config, encoder, decoder, device):
         if enc_flops is not None and dec_flops is not None:
             total_flops = enc_flops + dec_flops
 
+        print(f"Encoder params: {_format_count(enc_params)} ({_format_count_with_commas(enc_params)})")
+        print(f"Decoder params: {_format_count(dec_params)} ({_format_count_with_commas(dec_params)})")
+        print(f"Total params:   {_format_count(total_params)} ({_format_count_with_commas(total_params)})")
+        print(f"Encoder size: {enc_param_mem:.2f} MB")
+        print(f"Decoder size: {dec_param_mem:.2f} MB")
+        print(f"Total size:   {enc_param_mem + dec_param_mem:.2f} MB")
+        print(f"Encoder FLOPs: {_format_count(enc_flops)}")
+        print(f"Decoder FLOPs: {_format_count(dec_flops)}")
         print(f"Total FLOPs: {_format_count(total_flops)}")
         if enc_error:
             print(f"Encoder FLOPs failed: {enc_error}")
@@ -288,6 +398,7 @@ def train_MambaJSCC(config):
     seed_torch()
     loss_records = []
     val_loss_records = []
+    tri_weight_records = []
     log_dir = _get_log_dir(config)
     eval_fre = getattr(config.TRAIN, "EVAL_FRE", 10)
     for e in range(config.TRAIN.EPOCHS):
@@ -362,6 +473,10 @@ def train_MambaJSCC(config):
         loss_ave = _reduce_scalar(loss_ave, device)
         if _is_main_process():
             loss_records.append([e + 1, loss_ave])
+            tri_record = {"epoch": e + 1}
+            tri_record.update(_collect_tri_path_weight_stats(encoder, "encoder"))
+            tri_record.update(_collect_tri_path_weight_stats(decoder, "decoder"))
+            tri_weight_records.append(tri_record)
         if _is_main_process() and (e + 1) % (config.TRAIN.SAVE_FRE) == 0:
             # save_model(encoder, save_path=config.TRAIN.ENCODER_PATH + "ls32_OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(config.MODEL.VSSM.OUT_CHANS,config.MODEL.VSSM.Extent,config.TRAIN.LOSS,config.MODEL.VSSM.SCAN_NUMBER,config.CHANNEL.SNR,config.CHANNEL.ADAPTIVE, config.CHANNEL.TYPE,len(config.MODEL.VSSM.EMBED_DIM), config.MODEL.VSSM.EMBED_DIM,config.MODEL.VSSM.DEPTHS,config.DATA.IMG_SIZE) + '.pt')
             # save_model(decoder, save_path=config.TRAIN.DECODER_PATH + "ls32_OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(config.MODEL.VSSM.OUT_CHANS,config.MODEL.VSSM.Extent,config.TRAIN.LOSS,config.MODEL.VSSM.SCAN_NUMBER,config.CHANNEL.SNR,config.CHANNEL.ADAPTIVE, config.CHANNEL.TYPE,len(config.MODEL.VSSM.EMBED_DIM), config.MODEL.VSSM.EMBED_DIM,config.MODEL.VSSM.DEPTHS,config.DATA.IMG_SIZE) + '.pt')
@@ -400,5 +515,6 @@ def train_MambaJSCC(config):
         save_model(_unwrap_parallel(decoder), save_path=config.TRAIN.DECODER_PATH + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(config.MODEL.VSSM.OUT_CHANS,config.MODEL.VSSM.Extent,config.TRAIN.LOSS,config.MODEL.VSSM.SCAN_NUMBER,config.CHANNEL.SNR,config.CHANNEL.ADAPTIVE, config.CHANNEL.TYPE,len(config.MODEL.VSSM.EMBED_DIM), config.MODEL.VSSM.EMBED_DIM,config.MODEL.VSSM.DEPTHS,config.DATA.IMG_SIZE) + '.pt')
     if _is_main_process():
         _save_loss_curve(loss_records, val_loss_records, log_dir)
+        _save_tri_path_weight_curve(tri_weight_records, log_dir)
     if distributed:
         dist.barrier()
