@@ -179,6 +179,25 @@ _C.TRAIN.START_EPOCH=10
 _C.TRAIN.ENCODER_PATH='/mnt/wutong/MambaJSCCcheckpoints/Journal/encoder'
 _C.TRAIN.DECODER_PATH='/mnt/wutong/MambaJSCCcheckpoints/Journal/decoder'
 _C.TRAIN.LOG_PATH=''
+# -----------------------------------------------------------------------------
+# Task-oriented / multitask JSCC settings
+# -----------------------------------------------------------------------------
+_C.TASK = CN()
+_C.TASK.ENABLE = False
+_C.TASK.TYPE = "classification"
+_C.TASK.STAGE = "joint"
+_C.TASK.NUM_CLASSES = 10
+_C.TASK.REC_LOSS_WEIGHT = 1.0
+_C.TASK.CLS_LOSS_WEIGHT = 0.05
+_C.TASK.SNR_EMBED_DIM = 32
+_C.TASK.HEAD_HIDDEN_DIM = 256
+_C.TASK.HEAD_DROPOUT = 0.0
+_C.TASK.HEAD_LR = 1e-4
+_C.TASK.HEAD_WEIGHT_DECAY = 0.05
+_C.TASK.USE_SNR_EMBED = True
+_C.TASK.FREEZE_ENCODER = False
+_C.TASK.FREEZE_DECODER = False
+_C.TASK.CLASSIFIER_PATH = ""
 # MoE
 _C.TRAIN.MOE = CN()
 # Only save model on master device

@@ -28,6 +28,8 @@ from fvcore.nn import FlopCountAnalysis, flop_count_str, flop_count
 from timm.utils import ModelEma as ModelEma
 from run.train import train_MambaJSCC
 from run.eval import test_MambaJSCC
+from run.train_multitask import train_MambaJSCC_multitask
+from run.eval_multitask import test_MambaJSCC_multitask
 
 from utils.utils import GPUManager
 
@@ -42,7 +44,11 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_name", default="DIV2K")
     parser.add_argument("--project_path", default=os.path.dirname(os.path.abspath(__file__)))
-    parser.add_argument("--mode", default="test", choices=["train", "test"])
+    parser.add_argument(
+        "--mode",
+        default="test",
+        choices=["train", "test", "train_multitask", "test_multitask"],
+    )
     parsed = parser.parse_args()
     project_path = os.path.abspath(parsed.project_path)
     parsed.model_config_path = os.path.join(
@@ -73,6 +79,20 @@ def main(args):
 
         seed_torch()
         test_MambaJSCC(config)
+
+    elif args.mode == 'train_multitask':
+
+        seed_torch()
+        train_MambaJSCC_multitask(config)
+        if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+            return
+        seed_torch()
+        test_MambaJSCC_multitask(config)
+
+    elif args.mode == 'test_multitask':
+
+        seed_torch()
+        test_MambaJSCC_multitask(config)
 
 if __name__ == "__main__":
     main(parse_args())
