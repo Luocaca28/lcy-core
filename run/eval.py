@@ -75,12 +75,15 @@ def _save_eval_curves(snr_list, psnr_all, msssim_all, config, prefix="snr"):
 
 def _psnr_value(x, y):
     mse = torch.nn.functional.mse_loss(
-        x.clamp(0.0, 1.0) * 255.0, y.clamp(0.0, 1.0) * 255.0
+        x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)
     )
-    return (10 * (torch.log(255.0 * 255.0 / mse) / np.log(10))).item()
+    if mse.item() == 0:
+        return float("inf")
+    return (-10.0 * torch.log10(mse)).item()
 
 
 def _msssim_value(x, y, calculator):
+    # utils.distortion.MS_SSIM returns 1 - ms_ssim; convert it back to MS-SSIM.
     return 1.0 - calculator(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)).mean().item()
 
 
@@ -109,7 +112,8 @@ def eval_MambaJSCC_models(
     # test_mem_and_comp(config, encoder, decoder, input_size=(H, W))
 
     print(H, W)
-    msssim_calculator = MS_SSIM(data_range=1.0, levels=4, channel=3).cuda()
+    device = next(encoder.parameters()).device
+    msssim_calculator = MS_SSIM(data_range=1.0, levels=4, channel=3).to(device)
     encoder.eval()
     decoder.eval()
     performance_all = []
@@ -152,13 +156,12 @@ def eval_MambaJSCC_models(
         seed_torch()
         with tqdm(test_loader, dynamic_ncols=False) as tqdmTestData:
             for i, (input_image, target) in enumerate(tqdmTestData):
-                input_image = input_image.cuda()
+                input_image = input_image.to(device, non_blocking=True)
                 if config.DATA.DATASET == "CIFAR10":
                     input_image = torch.nn.functional.interpolate(
                         input_image, (128, 128), mode="nearest"
                     )
                 # print(input_image.shape)
-                # target = target.cuda()
                 start_encoder = time.time()
                 feature = encoder(input_image, SNR)
                 end_encoder = time.time()
@@ -256,6 +259,7 @@ def eval_MambaJSCC_models(
 @torch.no_grad()
 def test_MambaJSCC(config):
     _, test_loader = get_loader(config)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     encoder_path = (
         config.TRAIN.ENCODER_PATH
@@ -292,8 +296,8 @@ def test_MambaJSCC(config):
         + ".pt"
     )
 
-    encoder = torch.load(encoder_path, weights_only=False)
-    decoder = torch.load(decoder_path, weights_only=False)
+    encoder = torch.load(encoder_path, weights_only=False, map_location=device).to(device)
+    decoder = torch.load(decoder_path, weights_only=False, map_location=device).to(device)
     eval_MambaJSCC_models(
         config,
         encoder,
@@ -311,6 +315,7 @@ def eval_MambaJSCC_with_SNR_error(config, mode=2):
     mode 2 stand for fix SNR with various estimation
     """
     _, test_loader = get_loader(config)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     encoder_path = (
         config.TRAIN.ENCODER_PATH
@@ -347,8 +352,8 @@ def eval_MambaJSCC_with_SNR_error(config, mode=2):
         + ".pt"
     )
 
-    encoder = torch.load(encoder_path)
-    decoder = torch.load(decoder_path)
+    encoder = torch.load(encoder_path, weights_only=False, map_location=device).to(device)
+    decoder = torch.load(decoder_path, weights_only=False, map_location=device).to(device)
 
     channel = Channel(config)
 
@@ -381,7 +386,7 @@ def eval_MambaJSCC_with_SNR_error(config, mode=2):
             seed_torch()
             with tqdm(test_loader, dynamic_ncols=False) as tqdmTestData:
                 for i, (input_image, target) in enumerate(tqdmTestData):
-                    input_image = input_image.cuda()
+                    input_image = input_image.to(device, non_blocking=True)
                     SNR_error = SNR + np.random.normal(0, error)
 
                     if mode == 1:
@@ -455,8 +460,9 @@ def test_mem_and_comp(config, encoder, decoder, input_size=(256, 256)):
             y = self.decoder(x, SNR)
             return y
 
-    network = net(encoder, decoder).cuda()
-    input = torch.randn(1, 3, input_size[0], input_size[1]).cuda()
+    device = next(encoder.parameters()).device
+    network = net(encoder, decoder).to(device)
+    input = torch.randn(1, 3, input_size[0], input_size[1], device=device)
     with OperationsCounterMode(network) as ops_counter:
         network(input)
     # macs,params=profile(network,inputs=(input,))

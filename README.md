@@ -114,7 +114,7 @@ Actually, our MambaJSCC contain two cuda core, named "adaptive_selective_scan_cu
 so if you want to equip the whole function of MambaJSCC, please prepare you environment with the option operation.
 
 # Fix Bug
-1. We change the eval.py with "torch.load(encoder_path, weight_only=False)" because of the change of Pytorch in 2.6 version.
+1. We change the eval.py with "torch.load(encoder_path, weights_only=False)" because of the change of Pytorch in 2.6 version.
 2. We change the vmamba.py to ensure you can run our code with the only installation of "adaptive_selective_scan_cuda_core" as. 
 
 ```

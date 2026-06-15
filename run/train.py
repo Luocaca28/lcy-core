@@ -363,25 +363,28 @@ def train_MambaJSCC(config):
     
     tri_lr_mult = getattr(config.MODEL.VSSM, "TRI_MERGE_LR_MULT", 1.0)
     optimizer_encoder = _build_adamw_with_tri_merge(
-        encoder, config.TRAIN.BASE_LR, 1e-4, tri_lr_mult
+        encoder, config.TRAIN.BASE_LR, config.TRAIN.WEIGHT_DECAY, tri_lr_mult
     )
     optimizer_decoder = _build_adamw_with_tri_merge(
-        decoder, config.TRAIN.BASE_LR, 1e-4, tri_lr_mult
+        decoder, config.TRAIN.BASE_LR, config.TRAIN.WEIGHT_DECAY, tri_lr_mult
     )
     if _is_main_process():
         _print_optimizer_groups("encoder", optimizer_encoder)
         _print_optimizer_groups("decoder", optimizer_decoder)
 
+    total_steps = max(1, config.TRAIN.EPOCHS * len(train_loader))
+    warmup_steps = max(1, int(config.TRAIN.WARMUP_EPOCHS * len(train_loader)))
+    cosine_steps = max(1, total_steps - warmup_steps)
     cosineScheduler_encoder = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer=optimizer_encoder, T_max=config.TRAIN.EPOCHS, eta_min=0, last_epoch=-1)
+        optimizer=optimizer_encoder, T_max=cosine_steps, eta_min=0, last_epoch=-1)
     warmUpScheduler_encoder = GradualWarmupScheduler(
-        optimizer=optimizer_encoder, multiplier=2., warm_epoch=0.1,  # CHDDIM_config.epoch // 10,
+        optimizer=optimizer_encoder, multiplier=2., warm_epoch=warmup_steps,
         after_scheduler=cosineScheduler_encoder)
     
     cosineScheduler_decoder = optim.lr_scheduler.CosineAnnealingLR(
-    optimizer=optimizer_decoder, T_max=config.TRAIN.EPOCHS, eta_min=0, last_epoch=-1)
+        optimizer=optimizer_decoder, T_max=cosine_steps, eta_min=0, last_epoch=-1)
     warmUpScheduler_decoder = GradualWarmupScheduler(
-        optimizer=optimizer_decoder, multiplier=2., warm_epoch=0.1,  # CHDDIM_config.epoch // 10,
+        optimizer=optimizer_decoder, multiplier=2., warm_epoch=warmup_steps,
         after_scheduler=cosineScheduler_decoder)
     
     criterion=loss_matrix(config)
@@ -450,12 +453,14 @@ def train_MambaJSCC(config):
                 loss_ave=(loss_ave+loss.item())
 
                 torch.nn.utils.clip_grad_norm_(    
-                    encoder.parameters(), 1)
+                    encoder.parameters(), config.TRAIN.CLIP_GRAD)
                 torch.nn.utils.clip_grad_norm_(
-                    decoder.parameters(), 1)
+                    decoder.parameters(), config.TRAIN.CLIP_GRAD)
                 
                 optimizer_encoder.step()
                 optimizer_decoder.step()
+                warmUpScheduler_encoder.step()
+                warmUpScheduler_decoder.step()
 
                 tqdmTrainData.set_postfix({
                     'e':e,
@@ -464,11 +469,9 @@ def train_MambaJSCC(config):
                     'CBR':CBR,
                     'SNR':SNR,
                     "LR": tuple(group["lr"] for group in optimizer_encoder.param_groups)
-                }
+                    }
                     )
 
-        warmUpScheduler_encoder.step()
-        warmUpScheduler_decoder.step()
         loss_ave=loss_ave/(i+1)
         loss_ave = _reduce_scalar(loss_ave, device)
         if _is_main_process():

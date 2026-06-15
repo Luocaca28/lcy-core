@@ -34,7 +34,7 @@ class Mamba_decoder(nn.Module):
     
 class Mamba_classify(nn.Module):
     def __init__(self, config):
-        super(Mamba_decoder, self).__init__()
+        super(Mamba_classify, self).__init__()
         self.config = config
 
         self.decoder = create_decoder(config)

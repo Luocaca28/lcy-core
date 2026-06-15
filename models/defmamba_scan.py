@@ -36,13 +36,14 @@ class DeformablePathTrans(torch.autograd.Function):
 class ConvOffset(nn.Module):
     def __init__(self, embed_dim, kk, pad_size):
         super().__init__()
+        hidden_dim = max(embed_dim // 16, 1)
         self.conv1 = nn.Conv2d(
             embed_dim, embed_dim, kk, 1, pad_size, groups=embed_dim
         )
         self.ca = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim // 16),
+            nn.Linear(embed_dim, hidden_dim),
             nn.GELU(),
-            nn.Linear(embed_dim // 16, embed_dim),
+            nn.Linear(hidden_dim, embed_dim),
             nn.Sigmoid(),
         )
         self.ln = nn.LayerNorm(embed_dim)
@@ -73,6 +74,8 @@ class DeformableLayer(nn.Module):
 
     @torch.no_grad()
     def _get_ref_points(self, H_key, W_key, B, dtype, device):
+        if H_key <= 1 or W_key <= 1:
+            raise ValueError(f"DefScan requires H_key,W_key > 1, got H_key={H_key}, W_key={W_key}")
         ref_y, ref_x = torch.meshgrid(
             torch.linspace(0, H_key - 1, H_key, dtype=dtype, device=device),
             torch.linspace(0, W_key - 1, W_key, dtype=dtype, device=device),
@@ -85,6 +88,8 @@ class DeformableLayer(nn.Module):
 
     @torch.no_grad()
     def _get_key_ref_points(self, H, W, B, dtype, device):
+        if H <= 1 or W <= 1:
+            raise ValueError(f"DefScan requires H,W > 1, got H={H}, W={W}")
         ref_y, ref_x = torch.meshgrid(
             torch.linspace(0, H - 1, H, dtype=dtype, device=device),
             torch.linspace(0, W - 1, W, dtype=dtype, device=device),
@@ -97,6 +102,8 @@ class DeformableLayer(nn.Module):
 
     @torch.no_grad()
     def _get_path_ref_points(self, N, B, dtype, device):
+        if N <= 1:
+            raise ValueError(f"DefScan requires sequence length > 1, got N={N}")
         ref_path = torch.linspace(0.5, N - 0.5, N, dtype=dtype, device=device)
         ref_path.div_(N - 1.0).mul_(2.0).sub_(1.0)
         return ref_path[None, ...].expand(B, -1)
@@ -108,6 +115,8 @@ class DeformableLayer(nn.Module):
     def forward(self, x):
         dtype, device = x.dtype, x.device
         B, C, H, W = x.size()
+        if H <= 1 or W <= 1:
+            raise ValueError(f"DefScan requires H,W > 1, got H={H}, W={W}")
         N = H * W
 
         offset = self.conv_offset(x).contiguous()
