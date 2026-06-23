@@ -186,9 +186,9 @@ class MS_SSIM(torch.jit.ScriptModule):
         return 1 - ms_ssim(X, Y, window=self.window, data_range=self.data_range, weights=self.weights,
                        use_padding=self.use_padding, eps=self.eps)
 
-class loss_matrix(torch.nn.Module):
+class ReconstructionLoss(torch.nn.Module):
     def __init__(self,config):
-        super(loss_matrix, self).__init__()
+        super(ReconstructionLoss, self).__init__()
         self.config=config
         self.Cal_lpips=lpips().eval().cuda()
         if self.config.TRAIN.GAN_LOSS:
@@ -271,9 +271,9 @@ class loss_matrix(torch.nn.Module):
         d_weight = d_weight * self.discriminator_weight
         return d_weight
     
-class eval_matrix(torch.nn.Module):
+class ReconstructionMetric(torch.nn.Module):
     def __init__(self,config):
-        super(eval_matrix, self).__init__()
+        super(ReconstructionMetric, self).__init__()
         self.Cal_lpips=lpips().eval().cuda()
         _loss_dict=dict(
             PSNR=self.psnr,

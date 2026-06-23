@@ -1,35 +1,28 @@
-"""
-@author: Tong Wu
-@contact: wu_tong@sjtu.edu.cn
+"""Reconstruction task: evaluation entry points for DefMambaJSCC.
+
+Evaluates a trained encoder/decoder pair across the configured SNR sweep and
+reports PSNR / MS-SSIM. Shared plumbing (log dir, channel forward, checkpoint
+naming) comes from ``utils.engine``.
 """
 
-from models.network import Mamba_encoder, Mamba_decoder
-from models.channel import Channel
-from data.datasets import get_loader
-import torch
-import torch.optim as optim
-from tqdm import tqdm
-from torchvision.utils import save_image
-from utils.utils import *
-from utils.distortion import *
-import time
 import csv
 import os
+import time
 
+import numpy as np
+import torch
+from torchvision.utils import save_image
+from tqdm import tqdm
 
-def _get_log_dir(config):
-    log_path = getattr(config.TRAIN, "LOG_PATH", "")
-    if log_path:
-        os.makedirs(log_path, exist_ok=True)
-        return log_path
-    base = os.path.commonpath([config.TRAIN.ENCODER_PATH, config.TRAIN.DECODER_PATH])
-    log_dir = os.path.join(base, "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    return log_dir
+from data.datasets import get_loader
+from models.channel import Channel
+from utils.distortion import MS_SSIM, ReconstructionMetric
+from utils.engine import apply_channel, checkpoint_tag, get_log_dir
+from utils.utils import seed_torch
 
 
 def _get_output_root(config):
-    log_dir = _get_log_dir(config)
+    log_dir = get_log_dir(config)
     return os.path.dirname(os.path.normpath(log_dir))
 
 
@@ -68,15 +61,13 @@ def _save_curve(snr_list, values, metric_name, log_dir, prefix="snr"):
 
 
 def _save_eval_curves(snr_list, psnr_all, msssim_all, config, prefix="snr"):
-    log_dir = _get_log_dir(config)
+    log_dir = get_log_dir(config)
     _save_curve(snr_list, psnr_all, "PSNR", log_dir, prefix=prefix)
     _save_curve(snr_list, msssim_all, "MS-SSIM", log_dir, prefix=prefix)
 
 
 def _psnr_value(x, y):
-    mse = torch.nn.functional.mse_loss(
-        x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)
-    )
+    mse = torch.nn.functional.mse_loss(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0))
     if mse.item() == 0:
         return float("inf")
     return (-10.0 * torch.log10(mse)).item()
@@ -93,8 +84,15 @@ def _target_name(target, index):
     return str(target)
 
 
+def _reconstruction_checkpoint_paths(config):
+    tag = checkpoint_tag(config)
+    encoder_path = config.TRAIN.ENCODER_PATH + tag + ".pt"
+    decoder_path = config.TRAIN.DECODER_PATH + tag + ".pt"
+    return encoder_path, decoder_path
+
+
 @torch.no_grad()
-def eval_MambaJSCC_models(
+def evaluate_reconstruction(
     config,
     encoder,
     decoder,
@@ -109,8 +107,6 @@ def eval_MambaJSCC_models(
         _, test_loader = get_loader(config)
     channel = Channel(config)
     B, C, H, W = next(iter(test_loader))[0].shape
-    # test_mem_and_comp(config, encoder, decoder, input_size=(H, W))
-
     print(H, W)
     device = next(encoder.parameters()).device
     msssim_calculator = MS_SSIM(data_range=1.0, levels=4, channel=3).to(device)
@@ -120,77 +116,43 @@ def eval_MambaJSCC_models(
     psnr_all = []
     msssim_all = []
     loss_all = []
-    # SNR_list = [20] #config.CHANNEL.SNR
-    SNR_list = config.CHANNEL.SNR
+    snr_list = config.CHANNEL.SNR
     output_root = _get_output_root(config)
     recon_root = os.path.join(output_root, "recon") if save_recon else None
-    log_dir = _get_log_dir(config)
-    print(
-        "----------Evaluating: ls:128--OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
-            config.MODEL.VSSM.OUT_CHANS,
-            config.MODEL.VSSM.Extent,
-            config.TRAIN.LOSS,
-            config.MODEL.VSSM.SCAN_NUMBER,
-            config.CHANNEL.SNR,
-            config.CHANNEL.ADAPTIVE,
-            config.CHANNEL.TYPE,
-            len(config.MODEL.VSSM.EMBED_DIM),
-            config.MODEL.VSSM.EMBED_DIM,
-            config.MODEL.VSSM.DEPTHS,
-            config.DATA.IMG_SIZE,
-        )
-    )
+    log_dir = get_log_dir(config)
+    print(f"----------Evaluating reconstruction: {checkpoint_tag(config)}")
     all_time = 0
 
-    for SNR in SNR_list:
-
-        number = 0
+    for snr in snr_list:
         performance_avg = 0
         psnr_avg = 0
         msssim_avg = 0
         loss_avg = 0
         per_image_rows = []
         if save_recon:
-            recon_dir = os.path.join(recon_root, f"SNR_{SNR}")
+            recon_dir = os.path.join(recon_root, f"SNR_{snr}")
             os.makedirs(recon_dir, exist_ok=True)
         seed_torch()
-        with tqdm(test_loader, dynamic_ncols=False) as tqdmTestData:
-            for i, (input_image, target) in enumerate(tqdmTestData):
+        with tqdm(test_loader, dynamic_ncols=False) as tqdm_data:
+            for i, (input_image, target) in enumerate(tqdm_data):
                 input_image = input_image.to(device, non_blocking=True)
                 if config.DATA.DATASET == "CIFAR10":
                     input_image = torch.nn.functional.interpolate(
                         input_image, (128, 128), mode="nearest"
                     )
-                # print(input_image.shape)
                 start_encoder = time.time()
-                feature = encoder(input_image, SNR)
+                feature = encoder(input_image, snr)
                 end_encoder = time.time()
-                CBR = feature.numel() / 2 / input_image.numel()
+                cbr = feature.numel() / 2 / input_image.numel()
 
-                received, pwr, h = channel.forward(feature, SNR)
-                if config.CHANNEL.TYPE == "rayleigh":
-                    sigma_square = 1.0 / (10 ** (SNR / 10))
-                    received = torch.conj(h) * received / (torch.abs(h) ** 2 + sigma_square)
-
-                elif config.CHANNEL.TYPE == "awgn":
-                    pass
-                else:
-                    raise ValueError("channel type error")
-
-                received = torch.cat(
-                    (torch.real(received), torch.imag(received)), dim=2
-                ) * torch.sqrt(pwr)
+                z_hat = apply_channel(channel, config, feature, snr)
                 start_decoder = time.time()
-                recon_image = decoder(received, SNR)
-                end_decocer = time.time()
-                all_time = all_time + end_encoder - start_encoder + end_decocer - start_decoder
+                recon_image = decoder(z_hat, snr)
+                end_decoder = time.time()
+                all_time = all_time + end_encoder - start_encoder + end_decoder - start_decoder
                 if criterion is not None:
                     loss_value = criterion(
-                        recon_image,
-                        input_image,
-                        feature,
-                        opt_idx=0,
-                        global_step=global_step,
+                        recon_image, input_image, feature, opt_idx=0, global_step=global_step
                     )
                     loss_avg += loss_value.item()
 
@@ -207,9 +169,9 @@ def eval_MambaJSCC_models(
                     if save_recon:
                         name = _target_name(target, sample_idx)
                         stem = os.path.splitext(os.path.basename(name))[0]
-                        recon_name = f"{stem}_SNR{SNR}_PSNR{psnr:.4f}_MSSSIM{msssim:.6f}.png"
+                        recon_name = f"{stem}_SNR{snr}_PSNR{psnr:.4f}_MSSSIM{msssim:.6f}.png"
                         save_image(recon_sample.clamp(0.0, 1.0), os.path.join(recon_dir, recon_name))
-                        per_image_rows.append([name, SNR, psnr, msssim])
+                        per_image_rows.append([name, snr, psnr, msssim])
 
                 psnr_batch = sum(batch_psnr_values) / len(batch_psnr_values)
                 msssim_batch = sum(batch_msssim_values) / len(batch_msssim_values)
@@ -220,13 +182,13 @@ def eval_MambaJSCC_models(
                 performance_avg = performance_avg + performance
                 psnr_avg = psnr_avg + psnr_batch
                 msssim_avg = msssim_avg + msssim_batch
-                tqdmTestData.set_postfix(
+                tqdm_data.set_postfix(
                     {
                         "matrix": performance,
                         "PSNR": psnr_batch,
                         "MS-SSIM": msssim_batch,
-                        "CBR": CBR,
-                        "SNR": SNR,
+                        "CBR": cbr,
+                        "SNR": snr,
                         "per": (performance, performance_avg / (i + 1)),
                     }
                 )
@@ -237,68 +199,33 @@ def eval_MambaJSCC_models(
         if criterion is not None:
             loss_all.append(loss_avg / (i + 1))
         if save_recon:
-            metric_csv = os.path.join(log_dir, f"per_image_metrics_SNR_{SNR}.csv")
+            metric_csv = os.path.join(log_dir, f"per_image_metrics_SNR_{snr}.csv")
             with open(metric_csv, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(["image", "snr", "psnr", "ms_ssim"])
                 writer.writerows(per_image_rows)
 
-    print(all_time / (len(SNR_list) * len(test_loader) * config.DATA.TEST_BATCH))
-    print("SNRs:", SNR_list)
+    print(all_time / (len(snr_list) * len(test_loader) * config.DATA.TEST_BATCH))
+    print("SNRs:", snr_list)
     print("performance:", performance_all)
     print("PSNR:", psnr_all)
     print("MS-SSIM:", msssim_all)
     if criterion is not None:
         print("loss:", loss_all)
     if save_curves:
-        _save_eval_curves(SNR_list, psnr_all, msssim_all, config, prefix=prefix)
+        _save_eval_curves(snr_list, psnr_all, msssim_all, config, prefix=prefix)
     mean_loss = sum(loss_all) / len(loss_all) if loss_all else None
     return performance_all, psnr_all, msssim_all, mean_loss
 
 
 @torch.no_grad()
-def test_MambaJSCC(config):
+def test_reconstruction(config):
     _, test_loader = get_loader(config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    encoder_path = (
-        config.TRAIN.ENCODER_PATH
-        + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
-            config.MODEL.VSSM.OUT_CHANS,
-            config.MODEL.VSSM.Extent,
-            config.TRAIN.LOSS,
-            config.MODEL.VSSM.SCAN_NUMBER,
-            config.CHANNEL.SNR,
-            config.CHANNEL.ADAPTIVE,
-            config.CHANNEL.TYPE,
-            len(config.MODEL.VSSM.EMBED_DIM),
-            config.MODEL.VSSM.EMBED_DIM,
-            config.MODEL.VSSM.DEPTHS,
-            config.DATA.IMG_SIZE,
-        )
-        + ".pt"
-    )
-    decoder_path = (
-        config.TRAIN.DECODER_PATH
-        + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
-            config.MODEL.VSSM.OUT_CHANS,
-            config.MODEL.VSSM.Extent,
-            config.TRAIN.LOSS,
-            config.MODEL.VSSM.SCAN_NUMBER,
-            config.CHANNEL.SNR,
-            config.CHANNEL.ADAPTIVE,
-            config.CHANNEL.TYPE,
-            len(config.MODEL.VSSM.EMBED_DIM),
-            config.MODEL.VSSM.EMBED_DIM,
-            config.MODEL.VSSM.DEPTHS,
-            config.DATA.IMG_SIZE,
-        )
-        + ".pt"
-    )
-
+    encoder_path, decoder_path = _reconstruction_checkpoint_paths(config)
     encoder = torch.load(encoder_path, weights_only=False, map_location=device).to(device)
     decoder = torch.load(decoder_path, weights_only=False, map_location=device).to(device)
-    eval_MambaJSCC_models(
+    evaluate_reconstruction(
         config,
         encoder,
         decoder,
@@ -308,165 +235,104 @@ def test_MambaJSCC(config):
     )
 
 
-def eval_MambaJSCC_with_SNR_error(config, mode=2):
-    """
-    SNR error with Gaussian random distribution
-    mode 1 stand for fix estimation with various SNR
-    mode 2 stand for fix SNR with various estimation
+def evaluate_reconstruction_with_snr_error(config, mode=2):
+    """Robustness diagnostic: inject Gaussian SNR estimation error.
+
+    mode 1: fixed encoder SNR, perturbed channel SNR.
+    mode 2: perturbed encoder SNR, fixed channel SNR.
     """
     _, test_loader = get_loader(config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    encoder_path = (
-        config.TRAIN.ENCODER_PATH
-        + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
-            config.MODEL.VSSM.OUT_CHANS,
-            config.MODEL.VSSM.Extent,
-            config.TRAIN.LOSS,
-            config.MODEL.VSSM.SCAN_NUMBER,
-            config.CHANNEL.SNR,
-            config.CHANNEL.ADAPTIVE,
-            config.CHANNEL.TYPE,
-            len(config.MODEL.VSSM.EMBED_DIM),
-            config.MODEL.VSSM.EMBED_DIM,
-            config.MODEL.VSSM.DEPTHS,
-            config.DATA.IMG_SIZE,
-        )
-        + ".pt"
-    )
-    decoder_path = (
-        config.TRAIN.DECODER_PATH
-        + "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
-            config.MODEL.VSSM.OUT_CHANS,
-            config.MODEL.VSSM.Extent,
-            config.TRAIN.LOSS,
-            config.MODEL.VSSM.SCAN_NUMBER,
-            config.CHANNEL.SNR,
-            config.CHANNEL.ADAPTIVE,
-            config.CHANNEL.TYPE,
-            len(config.MODEL.VSSM.EMBED_DIM),
-            config.MODEL.VSSM.EMBED_DIM,
-            config.MODEL.VSSM.DEPTHS,
-            config.DATA.IMG_SIZE,
-        )
-        + ".pt"
-    )
-
+    encoder_path, decoder_path = _reconstruction_checkpoint_paths(config)
     encoder = torch.load(encoder_path, weights_only=False, map_location=device).to(device)
     decoder = torch.load(decoder_path, weights_only=False, map_location=device).to(device)
 
     channel = Channel(config)
-
-    matrix = eval_matrix(config)
+    metric = ReconstructionMetric(config)
     encoder.eval()
     decoder.eval()
 
-    SNR_list = [1, 5, 10, 15, 20]  # config.CHANNEL.SNR
+    snr_list = [1, 5, 10, 15, 20]
     error_rate = [0.01, 0.1, 0.5, 1, 2]
-    print(
-        "----------Evaluating SNR error :OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
-            config.MODEL.VSSM.OUT_CHANS,
-            config.MODEL.VSSM.Extent,
-            config.TRAIN.LOSS,
-            config.MODEL.VSSM.SCAN_NUMBER,
-            config.CHANNEL.SNR,
-            config.CHANNEL.ADAPTIVE,
-            config.CHANNEL.TYPE,
-            len(config.MODEL.VSSM.EMBED_DIM),
-            config.MODEL.VSSM.EMBED_DIM,
-            config.MODEL.VSSM.DEPTHS,
-            config.DATA.IMG_SIZE,
-        )
-    )
+    print(f"----------Evaluating SNR error: {checkpoint_tag(config)}")
     for error in error_rate:
         performance_all = []
-        for SNR in SNR_list:
-            number = 0
+        for snr in snr_list:
             performance_avg = 0
             seed_torch()
-            with tqdm(test_loader, dynamic_ncols=False) as tqdmTestData:
-                for i, (input_image, target) in enumerate(tqdmTestData):
+            with tqdm(test_loader, dynamic_ncols=False) as tqdm_data:
+                for i, (input_image, target) in enumerate(tqdm_data):
                     input_image = input_image.to(device, non_blocking=True)
-                    SNR_error = SNR + np.random.normal(0, error)
+                    snr_error = snr + np.random.normal(0, error)
 
                     if mode == 1:
-                        feature = encoder(input_image, SNR)
-                        received, pwr, h = channel.forward(feature, SNR_error)
+                        feature = encoder(input_image, snr)
+                        received, pwr, h = channel.forward(feature, snr_error)
                         if config.CHANNEL.TYPE == "rayleigh":
-                            sigma_square = 1.0 / (10 ** (SNR / 10))
+                            sigma_square = 1.0 / (10 ** (snr / 10))
                             received = torch.conj(h) * received / (torch.abs(h) ** 2 + sigma_square)
-                            # print(1)
                         elif config.CHANNEL.TYPE == "awgn":
                             pass
                         else:
                             raise ValueError("channel type error")
-
-                        received = torch.cat(
+                        z_hat = torch.cat(
                             (torch.real(received), torch.imag(received)), dim=2
                         ) * torch.sqrt(pwr)
-
-                        recon_image = decoder(received, SNR)
-
+                        recon_image = decoder(z_hat, snr)
                     elif mode == 2:
-                        feature = encoder(input_image, SNR_error)
-                        received, pwr, h = channel.forward(feature, SNR)
+                        feature = encoder(input_image, snr_error)
+                        received, pwr, h = channel.forward(feature, snr)
                         if config.CHANNEL.TYPE == "rayleigh":
-                            sigma_square = 1.0 / (10 ** (SNR_error / 10))
+                            sigma_square = 1.0 / (10 ** (snr_error / 10))
                             received = torch.conj(h) * received / (torch.abs(h) ** 2 + sigma_square)
-                            # print(1)
                         elif config.CHANNEL.TYPE == "awgn":
                             pass
                         else:
                             raise ValueError("channel type error")
-
-                        received = torch.cat(
+                        z_hat = torch.cat(
                             (torch.real(received), torch.imag(received)), dim=2
                         ) * torch.sqrt(pwr)
+                        recon_image = decoder(z_hat, snr_error)
 
-                        recon_image = decoder(received, SNR_error)
-
-                    CBR = feature.numel() / 2 / input_image.numel()
-                    performance = matrix(recon_image, input_image)
+                    cbr = feature.numel() / 2 / input_image.numel()
+                    performance = metric(recon_image, input_image)
                     performance_avg = performance_avg + performance
-                    tqdmTestData.set_postfix(
+                    tqdm_data.set_postfix(
                         {
                             "matrix": performance,
-                            "CBR": CBR,
-                            "SNR": SNR,
-                            "SNR_error": SNR_error,
+                            "CBR": cbr,
+                            "SNR": snr,
+                            "SNR_error": snr_error,
                             "per": (performance, performance_avg / (i + 1)),
                         }
                     )
 
             performance_all.append(performance_avg / (i + 1))
 
-        print("SNRs:", SNR_list)
+        print("SNRs:", snr_list)
         print(f"performance with {error}:", performance_all)
 
 
 def test_mem_and_comp(config, encoder, decoder, input_size=(256, 256)):
     from torch_operation_counter import OperationsCounterMode
 
-    class net(torch.nn.Module):
+    class _Net(torch.nn.Module):
         def __init__(self, encoder, decoder):
             super().__init__()
             self.encoder = encoder
             self.decoder = decoder
 
         def forward(self, input):
-
-            SNR = 20
-            x = self.encoder(input, SNR)
-            y = self.decoder(x, SNR)
+            snr = 20
+            x = self.encoder(input, snr)
+            y = self.decoder(x, snr)
             return y
 
     device = next(encoder.parameters()).device
-    network = net(encoder, decoder).to(device)
+    network = _Net(encoder, decoder).to(device)
     input = torch.randn(1, 3, input_size[0], input_size[1], device=device)
     with OperationsCounterMode(network) as ops_counter:
         network(input)
-    # macs,params=profile(network,inputs=(input,))
-    # macs, params = clever_format([macs, params], "%.5f")
     print(
         "MACs:{}G. Paras:{}M.".format(
             ops_counter.total_operations / 1e9,

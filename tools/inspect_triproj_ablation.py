@@ -92,7 +92,7 @@ def main():
     os.chdir(project_path)
 
     from configs.config import get_config
-    from run.eval import eval_MambaJSCC_models
+    from run.eval import evaluate_reconstruction
 
     config = get_config(build_config_args(project_path, args.config_name))
     encoder_path = args.encoder_path or checkpoint_path(config, "encoder")
@@ -103,7 +103,7 @@ def main():
     def_init = getattr(config.MODEL.VSSM, "DEFSCAN_DEF_INIT", 0.05)
     apply_ablation(encoder, args.mode, def_init)
     apply_ablation(decoder, args.mode, def_init)
-    eval_MambaJSCC_models(
+    evaluate_reconstruction(
         config,
         encoder,
         decoder,

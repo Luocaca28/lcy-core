@@ -25,10 +25,9 @@ python tasks/classification/main_cls.py \
   --mode train
 ```
 
-Recommended comparison:
+Stages (`CLS.STAGE`, override with `--stage`) -- both train encoder + classifier:
 
 ```text
-head_only              load reconstruction encoder, freeze encoder, train classifier
-cls_finetune_encoder   load reconstruction encoder, train encoder + classifier
-cls_from_scratch       train encoder + classifier from scratch
+from_scratch       train encoder + classifier from random init
+finetune_encoder   warm-start encoder from a reconstruction checkpoint, then fine-tune
 ```

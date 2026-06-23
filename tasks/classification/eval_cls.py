@@ -1,3 +1,10 @@
+"""Classification task: evaluation entry points.
+
+Evaluates an encoder + latent classifier across the SNR sweep and reports
+accuracy. Shared plumbing (log dir, channel forward, run identity) comes from
+``utils.engine``; this task never imports from ``run``.
+"""
+
 import csv
 import os
 import time
@@ -7,46 +14,34 @@ from tqdm import tqdm
 
 from data.datasets import get_loader
 from models.channel import Channel
-from models.network import Mamba_encoder
-from run.eval import _get_log_dir
 from tasks.classification.task_head import LatentClassifierHead
+from utils.engine import apply_channel, checkpoint_tag, get_log_dir
 from utils.utils import save_model, seed_torch
 
 
 def classification_checkpoint_name(config):
-    stage = getattr(config.TASK, "STAGE", "cls_from_scratch")
-    return "CLS_{}_OUTCHANS{}_extent{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
-        stage,
-        config.MODEL.VSSM.OUT_CHANS,
-        config.MODEL.VSSM.Extent,
-        config.MODEL.VSSM.SCAN_NUMBER,
-        config.CHANNEL.SNR,
-        config.CHANNEL.ADAPTIVE,
-        config.CHANNEL.TYPE,
-        len(config.MODEL.VSSM.EMBED_DIM),
-        config.MODEL.VSSM.EMBED_DIM,
-        config.MODEL.VSSM.DEPTHS,
-        config.DATA.IMG_SIZE,
-    )
+    """Run identity for classification checkpoints (encoder + classifier share it)."""
+    stage = getattr(config.CLS, "STAGE", "from_scratch")
+    return f"CLS_{stage}_" + checkpoint_tag(config)
 
 
 def classifier_save_dir(config):
-    path = getattr(config.TASK, "CLASSIFIER_PATH", "")
+    path = getattr(config.CLS, "CLASSIFIER_PATH", "")
     if path:
         os.makedirs(path, exist_ok=True)
         return path
-    log_dir = _get_log_dir(config)
+    log_dir = get_log_dir(config)
     path = os.path.join(os.path.dirname(os.path.normpath(log_dir)), "classifier")
     os.makedirs(path, exist_ok=True)
     return path + os.sep
 
 
-def classification_encoder_save_dir(config):
-    path = getattr(config.TASK, "CLS_ENCODER_PATH", "")
+def encoder_save_dir(config):
+    path = getattr(config.CLS, "ENCODER_PATH", "")
     if path:
         os.makedirs(path, exist_ok=True)
         return path
-    log_dir = _get_log_dir(config)
+    log_dir = get_log_dir(config)
     path = os.path.join(os.path.dirname(os.path.normpath(log_dir)), "cls_encoder")
     os.makedirs(path, exist_ok=True)
     return path + os.sep
@@ -57,30 +52,19 @@ def build_latent_classifier(config):
     snr_max = max(snr_list) if isinstance(snr_list, (list, tuple)) else float(snr_list)
     return LatentClassifierHead(
         latent_dim=config.MODEL.VSSM.OUT_CHANS,
-        num_classes=config.TASK.NUM_CLASSES,
-        hidden_dim=config.TASK.HEAD_HIDDEN_DIM,
-        snr_embed_dim=config.TASK.SNR_EMBED_DIM,
-        use_snr=config.TASK.USE_SNR_EMBED,
+        num_classes=config.CLS.NUM_CLASSES,
+        hidden_dim=config.CLS.HEAD_HIDDEN_DIM,
+        snr_embed_dim=config.CLS.SNR_EMBED_DIM,
+        use_snr=config.CLS.USE_SNR_EMBED,
         snr_max=snr_max,
-        dropout=config.TASK.HEAD_DROPOUT,
+        dropout=config.CLS.HEAD_DROPOUT,
     )
 
 
 def save_classification_models(config, encoder, classifier):
     name = classification_checkpoint_name(config) + ".pt"
-    save_model(encoder, os.path.join(classification_encoder_save_dir(config), name))
+    save_model(encoder, os.path.join(encoder_save_dir(config), name))
     save_model(classifier, os.path.join(classifier_save_dir(config), name))
-
-
-def _format_received(config, received, pwr, h, snr):
-    if config.CHANNEL.TYPE == "rayleigh":
-        sigma_square = 1.0 / (10 ** (snr / 10))
-        received = torch.conj(h) * received / (torch.abs(h) ** 2 + sigma_square)
-    elif config.CHANNEL.TYPE == "awgn":
-        pass
-    else:
-        raise ValueError("channel type error")
-    return torch.cat((torch.real(received), torch.imag(received)), dim=2) * torch.sqrt(pwr)
 
 
 def _prepare_input(config, input_image):
@@ -120,7 +104,7 @@ def _save_curve(snr_list, values, name, log_dir, prefix="snr"):
 
 
 @torch.no_grad()
-def eval_MambaJSCC_classification_models(
+def evaluate_classification(
     config,
     encoder,
     classifier,
@@ -156,8 +140,7 @@ def eval_MambaJSCC_classification_models(
 
                 start = time.time()
                 feature = encoder(input_image, snr)
-                received, pwr, h = channel.forward(feature, snr)
-                z_hat = _format_received(config, received, pwr, h, snr)
+                z_hat = apply_channel(channel, config, feature, snr)
                 logits = classifier(z_hat, snr)
                 all_time += time.time() - start
 
@@ -171,12 +154,7 @@ def eval_MambaJSCC_classification_models(
                 correct += batch_correct
                 total += batch_total
                 n_batch += 1
-                tqdm_data.set_postfix(
-                    {
-                        "SNR": snr,
-                        "Acc": acc_batch,
-                    }
-                )
+                tqdm_data.set_postfix({"SNR": snr, "Acc": acc_batch})
 
         acc_all.append(correct / max(total, 1))
         if criterion_cls is not None:
@@ -188,7 +166,7 @@ def eval_MambaJSCC_classification_models(
     if criterion_cls is not None:
         print("Cls loss:", loss_all)
     if save_curves:
-        log_dir = _get_log_dir(config)
+        log_dir = get_log_dir(config)
         _save_curve(snr_list, acc_all, "acc", log_dir, prefix=prefix)
         if loss_all:
             _save_curve(snr_list, loss_all, "cls_loss", log_dir, prefix=prefix)
@@ -197,12 +175,12 @@ def eval_MambaJSCC_classification_models(
 
 
 @torch.no_grad()
-def test_MambaJSCC_classification(config):
+def test_classification(config):
     _, test_loader = get_loader(config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     name = classification_checkpoint_name(config) + ".pt"
     encoder = torch.load(
-        os.path.join(classification_encoder_save_dir(config), name),
+        os.path.join(encoder_save_dir(config), name),
         weights_only=False,
         map_location=device,
     ).to(device)
@@ -211,4 +189,4 @@ def test_MambaJSCC_classification(config):
         weights_only=False,
         map_location=device,
     ).to(device)
-    eval_MambaJSCC_classification_models(config, encoder, classifier, test_loader=test_loader)
+    evaluate_classification(config, encoder, classifier, test_loader=test_loader)

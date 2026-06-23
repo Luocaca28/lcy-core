@@ -28,11 +28,11 @@ def parse_args():
     parser.add_argument(
         "--stage",
         default=None,
-        choices=["head_only", "cls_finetune_encoder", "cls_from_scratch"],
-        help="Optional override for TASK.STAGE.",
+        choices=["finetune_encoder", "from_scratch"],
+        help="Optional override for CLS.STAGE.",
     )
-    parser.add_argument("--pretrain_encoder", default=None, help="Optional override for TASK.PRETRAIN_ENCODER.")
-    parser.add_argument("--pretrain_classifier", default=None, help="Optional override for TASK.PRETRAIN_CLASSIFIER.")
+    parser.add_argument("--pretrain_encoder", default=None, help="Optional override for CLS.PRETRAIN_ENCODER.")
+    parser.add_argument("--pretrain_classifier", default=None, help="Optional override for CLS.PRETRAIN_CLASSIFIER.")
     parsed = parser.parse_args()
     parsed.project_path = os.path.abspath(parsed.project_path)
     parsed.model_config_path = os.path.abspath(parsed.model_config)
@@ -46,33 +46,33 @@ def _apply_overrides(config, args):
     cfg = config.clone()
     cfg.defrost()
     if args.stage:
-        cfg.TASK.STAGE = args.stage
+        cfg.CLS.STAGE = args.stage
     if args.pretrain_encoder is not None:
-        cfg.TASK.PRETRAIN_ENCODER = args.pretrain_encoder
+        cfg.CLS.PRETRAIN_ENCODER = args.pretrain_encoder
     if args.pretrain_classifier is not None:
-        cfg.TASK.PRETRAIN_CLASSIFIER = args.pretrain_classifier
+        cfg.CLS.PRETRAIN_CLASSIFIER = args.pretrain_classifier
     cfg.freeze()
     return cfg
 
 
 def main(args):
     from configs.config import get_config
-    from tasks.classification.eval_cls import test_MambaJSCC_classification
-    from tasks.classification.train_cls import train_MambaJSCC_classification
+    from tasks.classification.eval_cls import test_classification
+    from tasks.classification.train_cls import train_classification
     from utils.utils import seed_torch
 
     config = _apply_overrides(get_config(args), args)
 
     if args.mode == "train":
         seed_torch()
-        train_MambaJSCC_classification(config)
+        train_classification(config)
         if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
             return
         seed_torch()
-        test_MambaJSCC_classification(config)
+        test_classification(config)
     elif args.mode == "test":
         seed_torch()
-        test_MambaJSCC_classification(config)
+        test_classification(config)
 
 
 if __name__ == "__main__":

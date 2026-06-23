@@ -22,10 +22,8 @@ CHANNEL:
   TYPE: 'awgn'
   SNR: [1, 3, 5, 7, 9, 11, 13, 15, 17, 20]
   ADAPTIVE: 'ssm'
-TASK:
-  ENABLE: True
-  TYPE: "classification"
-  STAGE: "cls_from_scratch"
+CLS:
+  STAGE: "from_scratch"
   NUM_CLASSES: 10
   SNR_EMBED_DIM: 32
   HEAD_HIDDEN_DIM: 256
@@ -33,8 +31,7 @@ TASK:
   HEAD_LR: 0.001
   HEAD_WEIGHT_DECAY: 0.0001
   USE_SNR_EMBED: True
-  FREEZE_ENCODER: False
-  CLS_ENCODER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/CIFAR10_cls_from_scratch_100ep_ddp4_b64x4_r64/encoder/'
+  ENCODER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/CIFAR10_cls_from_scratch_100ep_ddp4_b64x4_r64/encoder/'
   CLASSIFIER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/CIFAR10_cls_from_scratch_100ep_ddp4_b64x4_r64/classifier/'
   PRETRAIN_ENCODER: ""
   PRETRAIN_CLASSIFIER: ""

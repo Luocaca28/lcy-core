@@ -1,189 +1,60 @@
-# DefMambaJSCC 多任务串行微调汇报
+# DefMambaJSCC 双任务汇报：重建任务 + 分类任务
 
-## 总体目标
+## 总体设计
 
-本实验将 DefMambaJSCC 从单一图像重建任务扩展到重建-分类联合任务。核心思路不是直接从随机初始化开始联合训练，而是采用串行微调策略：
-
-```text
-Recon-only
-    -> Head-only
-    -> Encoder-head
-    -> Seq-joint
-```
-
-这样可以逐步回答三个问题：
-
-1. DefMambaJSCC 是否具备稳定的信道重建能力。
-2. 只经过重建任务训练的信道后 latent 是否已经包含分类语义。
-3. 分类监督是否能进一步增强 latent 的判别能力，同时保持重建质量。
-
-## 四阶段训练策略
-
-| 阶段 | 训练策略 | 冻结/更新对象 | 损失函数 | 目的 |
-|---|---|---|---|---|
-| Step 1: Recon-only | 纯重建预训练 | 更新 encoder + decoder；不训练 classifier | `L = L_rec` | 先得到稳定的 JSCC 重建主干 |
-| Step 2: Head-only | 冻结主干，只训练分类头 | 冻结 encoder + decoder；更新 classifier | `L = L_cls` | 探测 reconstruction latent 是否包含分类语义 |
-| Step 3: Encoder-head | 固定 decoder，调整 encoder 和分类头 | 更新 encoder + classifier；冻结 decoder | `L = 1.0 * L_rec + 0.1 * L_cls` | 让信道后 latent 更适合分类，同时保留可重建性 |
-| Step 4: Seq-joint | 全模型联合微调 | 更新 encoder + decoder + classifier | `L = 1.0 * L_rec + 0.05 * L_cls` | 最终平衡图像重建质量和下游分类性能 |
-
-## Step 1: Recon-only
-
-结构：
+DefMambaJSCC 不再使用"重建-分类多任务串行微调"的耦合流程，而是拆分为**两个相互独立的任务**，各自拥有独立的训练/评估代码与配置，共享同一套底层引擎（`utils/engine.py`：分布式、优化器/调度器、信道前向、模型 profiling、可变形第三路径权重统计、checkpoint 命名）。
 
 ```text
-input image
-    -> encoder
-    -> channel
-    -> decoder
-    -> reconstructed image
+            ┌──────────────────────────────┐
+            │      共享主干 Mamba Encoder      │
+            │      共享信道 Channel            │
+            │      共享引擎 utils/engine.py     │
+            └──────────────┬───────────────┘
+            ┌──────────────┴───────────────┐
+   重建任务 (run/)                     分类任务 (tasks/classification/)
+   encoder + decoder                  encoder + latent classifier
+   L = L_rec (PSNR/MS-SSIM/LPIPS)      L = L_cls (CrossEntropy)
 ```
 
-训练目标：
+两个任务彼此不互相 import，结构对称、命名清晰，便于单独训练、评估和对比。
 
-text
-L = L_rec
+## 任务一：图像重建（Reconstruction）
 
-这一阶段只优化图像重建任务，不关注分类准确率。其目的是先让 DefMambaJSCC 学到稳定的信道鲁棒重建能力，并为后续分类任务提供一个可靠的 encoder-decoder backbone。
+| 项目 | 说明 |
+|---|---|
+| 入口 | `run/train.py: train_reconstruction` / `run/eval.py: test_reconstruction` |
+| 命令 | `python main.py --mode train --config_name <recon配置>` |
+| 结构 | `input -> encoder -> channel -> decoder -> reconstructed image` |
+| 损失 | `L = L_rec`（由 `TRAIN.LOSS` 选择 PSNR/MSSSIM/LPIPS） |
+| 指标 | PSNR、MS-SSIM、SNR 曲线、第三路径权重曲线 |
+| 目的 | 学到稳定、信道鲁棒的 JSCC 重建主干 |
 
-重点观察指标：
+预期：PSNR/MS-SSIM 随 SNR 增大上升；train/val loss 稳定下降；可变形第三路径权重被模型合理利用。
 
-text
-PSNR
-MS-SSIM
-train loss / val loss
-tri_path_weight_curve
+## 任务二：信道后分类（Classification）
 
+分类头 `LatentClassifierHead` 作用在信道后 latent 上，支持注入 SNR 嵌入。提供两种独立可选的训练模式（`CLS.STAGE`），两者都训练 encoder + 分类头：
 
-预期现象：
+| 阶段 (`CLS.STAGE`) | 初始化 | 损失 | 目的 |
+|---|---|---|---|
+| `from_scratch` | encoder + 分类头从随机初始化联合训练 | `L_cls` | 端到端学习面向分类的表示（直接评估模型分类能力） |
+| `finetune_encoder` | 载入重建预训练 encoder 后与分类头一起微调 | `L_cls` | 从重建主干迁移，再为分类微调 |
 
-text
-PSNR 和 MS-SSIM 随 SNR 增大而上升；
-train/val loss 稳定下降；
-Def 第三路径权重逐渐被模型使用。
+| 项目 | 说明 |
+|---|---|
+| 入口 | `tasks/classification/train_cls.py: train_classification` / `eval_cls.py: test_classification` |
+| 命令 | `python tasks/classification/main_cls.py --mode train --stage from_scratch` |
+| 结构 | `input -> encoder -> channel -> latent classifier -> logits` |
+| 指标 | Accuracy、SNR-Accuracy 曲线、train/val cls loss |
+| 目的 | 评估信道后 latent 的分类判别能力，尤其低信噪比表现 |
 
-## Step 2: Head-only
+预期：Accuracy 明显高于 CIFAR-10 随机猜测的 10%；SNR 越高准确率趋势越好。
 
-结构：
+## 与旧多任务流程的关系
 
-text
-input image
-    -> frozen encoder
-    -> channel
-    -> received latent
-    -> classifier
+旧的"Recon-only → Head-only → Encoder-head → Seq-joint"四阶段串行联合损失流程已废弃，对应的 `run/train_multitask.py`、`run/eval_multitask.py` 已删除。如需复现"先重建预训练、再用其 encoder 做分类"的实验，改为两步独立运行：
 
-训练目标：
+1. 跑重建任务得到 encoder checkpoint；
+2. 跑分类任务 `--stage finetune_encoder --pretrain_encoder <重建得到的 encoder.pt>`。
 
-text
-L = L_cls
-
-这一阶段冻结 encoder 和 decoder，只训练分类头。它相当于 latent probing，用来验证只经过重建任务训练的信道后 latent 是否已经包含可用于分类的语义判别信息。
-
-重点观察指标：
-
-text
-Accuracy
-SNR-Accuracy curve
-train cls loss
-val acc
-
-预期现象：
-
-text
-Accuracy 明显高于 CIFAR-10 随机猜测的 10%；
-SNR 越高，Accuracy 趋势上越好；
-cls loss 稳定下降。
-
-## Step 3: Encoder-head
-
-结构：
-
-```text
-input image
-    -> trainable encoder
-    -> channel
-    -> received latent
-        ├── frozen decoder -> reconstructed image
-        └── classifier -> logits
-```
-
-训练目标：
-
-```text
-L = 1.0 * L_rec + 0.1 * L_cls
-```
-
-这一阶段训练 encoder 和 classifier，冻结 decoder。虽然 decoder 不更新，但重建损失仍会通过 frozen decoder 的前向图反传到 encoder。因此，encoder 同时受到两个约束：
-
-```text
-rec_loss -> frozen decoder -> z_hat -> encoder
-cls_loss -> classifier -> z_hat -> encoder
-```
-
-这样可以让信道后 latent 更适合分类，同时避免 encoder 产生完全偏离原 decoder 可重建空间的特征。
-
-重点观察指标：
-
-```text
-Accuracy
-SNR-Accuracy curve
-train cls loss
-val acc
-PSNR / MS-SSIM
-tri_path_weight_curve
-```
-
-预期现象：
-
-```text
-Accuracy 高于 Step 2；
-PSNR/MS-SSIM 不发生明显崩溃；
-第三路径权重继续发生合理变化。
-```
-
-## Step 4: Seq-joint
-
-结构：
-
-```text
-input image
-    -> encoder
-    -> channel
-    -> received latent
-        ├── decoder -> reconstructed image
-        └── classifier -> logits
-```
-
-训练目标：
-
-```text
-L = 1.0 * L_rec + 0.05 * L_cls
-```
-
-这一阶段解冻 encoder、decoder 和 classifier，进行最终联合微调。分类损失权重从 Step 3 的 `0.1` 降到 `0.05`，目的是避免过强分类监督破坏重建质量，在 PSNR/MS-SSIM 和 Accuracy 之间取得平衡。
-
-重点观察指标：
-
-```text
-PSNR
-MS-SSIM
-Accuracy
-SNR-Accuracy curve
-train/val loss
-tri_path_weight_curve
-```
-
-预期现象：
-
-```text
-Accuracy 保持或高于 Step 3；
-PSNR/MS-SSIM 保持稳定；
-SNR 越高，PSNR/MS-SSIM/Accuracy 整体更好；
-第三路径权重稳定，没有异常发散。
-```
-
-
-
-## 汇报总结
-
-本实验采用串行微调策略：先用重建任务训练 JSCC 主干，再冻结主干训练分类头探测 latent 语义，随后解冻 encoder 让信道后 latent 更适合分类，最后全模型联合微调，在重建质量和分类性能之间取得平衡。该流程能够区分 reconstruction latent 本身已有的语义信息和分类监督带来的任务导向语义增强，从而更清晰地解释 DefMambaJSCC 在下游分类任务中的作用。
+这样能更清晰地区分"重建 latent 本身已有的语义"与"分类监督带来的任务导向增强"。

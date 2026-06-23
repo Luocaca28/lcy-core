@@ -14,8 +14,8 @@ from configs.config import get_config
 
 from utils.utils import seed_torch
 
-from run.train import train_MambaJSCC
-from run.eval import test_MambaJSCC
+from run.train import train_reconstruction
+from run.eval import test_reconstruction
 
 from utils.utils import GPUManager
 
@@ -52,19 +52,19 @@ def main(args):
 
     config = get_config(args)
 
-    if args.mode=='train': 
+    if args.mode=='train':
 
         seed_torch()
-        train_MambaJSCC(config) 
+        train_reconstruction(config)
         if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
             return
         seed_torch()
-        test_MambaJSCC(config)
-        
+        test_reconstruction(config)
+
     elif args.mode == 'test':
 
         seed_torch()
-        test_MambaJSCC(config)
+        test_reconstruction(config)
 
 if __name__ == "__main__":
     main(parse_args())
