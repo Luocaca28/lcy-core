@@ -34,6 +34,8 @@ _C.DATA.IMG_SIZE = 256
 _C.DATA.train_data_dir= r"/mnt/wutong/datasets/DIV2K/DIV2K_train_HR"
 _C.DATA.val_data_dir= r"/mnt/wutong/datasets/DIV2K/DIV2K_valid_HR"
 _C.DATA.test_data_dir= r"/mnt/wutong/datasets/DIV2K/DIV2K_valid_HR"
+_C.DATA.VAL_RATIO = 0.1
+_C.DATA.VAL_SEED = 42
 # Interpolation to resize image (random, bilinear, bicubic)
 _C.DATA.INTERPOLATION = 'bicubic'
 # Use zipped dataset instead of folder dataset
@@ -128,7 +130,7 @@ _C.TRAIN.EPOCHS = 1
 _C.TRAIN.SAVE_FRE=1 
 _C.TRAIN.EVAL_FRE=10
 _C.TRAIN.WARMUP_EPOCHS = 20
-_C.TRAIN.WEIGHT_DECAY = 0.05
+_C.TRAIN.WEIGHT_DECAY = 1e-4
 _C.TRAIN.BASE_LR = 1e-4 #5e-4
 _C.TRAIN.WARMUP_LR = 5e-7
 _C.TRAIN.MIN_LR = 5e-6
@@ -192,12 +194,16 @@ _C.TASK.CLS_LOSS_WEIGHT = 0.05
 _C.TASK.SNR_EMBED_DIM = 32
 _C.TASK.HEAD_HIDDEN_DIM = 256
 _C.TASK.HEAD_DROPOUT = 0.0
-_C.TASK.HEAD_LR = 1e-4
-_C.TASK.HEAD_WEIGHT_DECAY = 0.05
+_C.TASK.HEAD_LR = 1e-3
+_C.TASK.HEAD_WEIGHT_DECAY = 1e-4
 _C.TASK.USE_SNR_EMBED = True
 _C.TASK.FREEZE_ENCODER = False
 _C.TASK.FREEZE_DECODER = False
+_C.TASK.CLS_ENCODER_PATH = ""
 _C.TASK.CLASSIFIER_PATH = ""
+_C.TASK.PRETRAIN_ENCODER = ""
+_C.TASK.PRETRAIN_DECODER = ""
+_C.TASK.PRETRAIN_CLASSIFIER = ""
 # MoE
 _C.TRAIN.MOE = CN()
 # Only save model on master device

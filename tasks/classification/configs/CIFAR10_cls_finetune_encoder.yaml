@@ -2,12 +2,11 @@ TRAIN:
   EPOCHS: 100
   SAVE_FRE: 100
   EVAL_FRE: 10
-  LOSS: 'PSNR'
-  EVAL_MATRIX: 'PSNR'
+  LOSS: 'CLS'
+  EVAL_MATRIX: 'ACC'
+  BASE_LR: 0.0001
   WEIGHT_DECAY: 0.0001
-  ENCODER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/CIFAR10_multitask_defscan_100ep_b64/encoder/'
-  DECODER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/CIFAR10_multitask_defscan_100ep_b64/decoder/'
-  LOG_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/CIFAR10_multitask_defscan_100ep_b64/logs/'
+  LOG_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/CIFAR10_cls_finetune_encoder_100ep_ddp4_b64x4_r64/logs/'
   GAN_LOSS: False
 DATA:
   DATASET: "CIFAR10"
@@ -26,10 +25,8 @@ CHANNEL:
 TASK:
   ENABLE: True
   TYPE: "classification"
-  STAGE: "joint"
+  STAGE: "cls_finetune_encoder"
   NUM_CLASSES: 10
-  REC_LOSS_WEIGHT: 1.0
-  CLS_LOSS_WEIGHT: 0.05
   SNR_EMBED_DIM: 32
   HEAD_HIDDEN_DIM: 256
   HEAD_DROPOUT: 0.0
@@ -37,8 +34,7 @@ TASK:
   HEAD_WEIGHT_DECAY: 0.0001
   USE_SNR_EMBED: True
   FREEZE_ENCODER: False
-  FREEZE_DECODER: False
-  CLASSIFIER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/CIFAR10_multitask_defscan_100ep_b64/classifier/'
+  CLS_ENCODER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/CIFAR10_cls_finetune_encoder_100ep_ddp4_b64x4_r64/encoder/'
+  CLASSIFIER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/CIFAR10_cls_finetune_encoder_100ep_ddp4_b64x4_r64/classifier/'
   PRETRAIN_ENCODER: ""
-  PRETRAIN_DECODER: ""
   PRETRAIN_CLASSIFIER: ""

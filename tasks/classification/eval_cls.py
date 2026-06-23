@@ -7,18 +7,18 @@ from tqdm import tqdm
 
 from data.datasets import get_loader
 from models.channel import Channel
-from models.network import Mamba_decoder, Mamba_encoder
-from models.task_head import LatentClassifierHead
-from run.eval import _get_log_dir, _msssim_value, _psnr_value
-from utils.distortion import MS_SSIM
+from models.network import Mamba_encoder
+from run.eval import _get_log_dir
+from tasks.classification.task_head import LatentClassifierHead
 from utils.utils import save_model, seed_torch
 
 
-def multitask_checkpoint_name(config):
-    return "OUTCHANS{}_extent{}_loss{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
+def classification_checkpoint_name(config):
+    stage = getattr(config.TASK, "STAGE", "cls_from_scratch")
+    return "CLS_{}_OUTCHANS{}_extent{}_SCANnum{}_SNR{}_adp{}_type{}_depth{}_embed{}_nums{}_rsl{}".format(
+        stage,
         config.MODEL.VSSM.OUT_CHANS,
         config.MODEL.VSSM.Extent,
-        config.TRAIN.LOSS,
         config.MODEL.VSSM.SCAN_NUMBER,
         config.CHANNEL.SNR,
         config.CHANNEL.ADAPTIVE,
@@ -41,6 +41,17 @@ def classifier_save_dir(config):
     return path + os.sep
 
 
+def classification_encoder_save_dir(config):
+    path = getattr(config.TASK, "CLS_ENCODER_PATH", "")
+    if path:
+        os.makedirs(path, exist_ok=True)
+        return path
+    log_dir = _get_log_dir(config)
+    path = os.path.join(os.path.dirname(os.path.normpath(log_dir)), "cls_encoder")
+    os.makedirs(path, exist_ok=True)
+    return path + os.sep
+
+
 def build_latent_classifier(config):
     snr_list = getattr(config.CHANNEL, "SNR", [20])
     snr_max = max(snr_list) if isinstance(snr_list, (list, tuple)) else float(snr_list)
@@ -55,19 +66,9 @@ def build_latent_classifier(config):
     )
 
 
-def _msssim_levels_for_size(size, max_levels=4, window_size=11):
-    levels = 1
-    current = int(size)
-    while levels < max_levels and current // 2 >= window_size:
-        current = current // 2
-        levels += 1
-    return levels
-
-
-def save_multitask_models(config, encoder, decoder, classifier):
-    name = multitask_checkpoint_name(config) + ".pt"
-    save_model(encoder, os.path.join(config.TRAIN.ENCODER_PATH, name))
-    save_model(decoder, os.path.join(config.TRAIN.DECODER_PATH, name))
+def save_classification_models(config, encoder, classifier):
+    name = classification_checkpoint_name(config) + ".pt"
+    save_model(encoder, os.path.join(classification_encoder_save_dir(config), name))
     save_model(classifier, os.path.join(classifier_save_dir(config), name))
 
 
@@ -80,6 +81,17 @@ def _format_received(config, received, pwr, h, snr):
     else:
         raise ValueError("channel type error")
     return torch.cat((torch.real(received), torch.imag(received)), dim=2) * torch.sqrt(pwr)
+
+
+def _prepare_input(config, input_image):
+    if config.DATA.DATASET == "CIFAR10":
+        return torch.nn.functional.interpolate(
+            input_image,
+            (config.DATA.IMG_SIZE, config.DATA.IMG_SIZE),
+            mode="bilinear",
+            align_corners=False,
+        )
+    return input_image
 
 
 def _save_curve(snr_list, values, name, log_dir, prefix="snr"):
@@ -108,13 +120,11 @@ def _save_curve(snr_list, values, name, log_dir, prefix="snr"):
 
 
 @torch.no_grad()
-def eval_MambaJSCC_multitask_models(
+def eval_MambaJSCC_classification_models(
     config,
     encoder,
-    decoder,
     classifier,
     test_loader=None,
-    criterion_rec=None,
     criterion_cls=None,
     save_curves=True,
     prefix="snr",
@@ -123,19 +133,14 @@ def eval_MambaJSCC_multitask_models(
         _, test_loader = get_loader(config)
     device = next(encoder.parameters()).device
     channel = Channel(config)
-    msssim_levels = _msssim_levels_for_size(config.DATA.IMG_SIZE, max_levels=4)
-    msssim_calculator = MS_SSIM(data_range=1.0, levels=msssim_levels, channel=3).to(device)
     encoder.eval()
-    decoder.eval()
     classifier.eval()
 
     snr_list = config.CHANNEL.SNR
-    psnr_all, msssim_all, acc_all, loss_all = [], [], [], []
+    acc_all, loss_all = [], []
     all_time = 0.0
 
     for snr in snr_list:
-        psnr_sum = 0.0
-        msssim_sum = 0.0
         correct = 0
         total = 0
         loss_sum = 0.0
@@ -144,92 +149,60 @@ def eval_MambaJSCC_multitask_models(
         with tqdm(test_loader, dynamic_ncols=False) as tqdm_data:
             for input_image, labels in tqdm_data:
                 if not torch.is_tensor(labels):
-                    raise ValueError("Multitask classification requires class labels.")
+                    raise ValueError("Classification requires class labels.")
                 input_image = input_image.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
-                if config.DATA.DATASET == "CIFAR10":
-                    input_image = torch.nn.functional.interpolate(
-                        input_image,
-                        (config.DATA.IMG_SIZE, config.DATA.IMG_SIZE),
-                        mode="bilinear",
-                        align_corners=False,
-                    )
+                input_image = _prepare_input(config, input_image)
 
                 start = time.time()
                 feature = encoder(input_image, snr)
                 received, pwr, h = channel.forward(feature, snr)
                 z_hat = _format_received(config, received, pwr, h, snr)
-                recon_image = decoder(z_hat, snr)
                 logits = classifier(z_hat, snr)
                 all_time += time.time() - start
 
-                psnr_batch = sum(
-                    _psnr_value(recon_image[j : j + 1], input_image[j : j + 1])
-                    for j in range(recon_image.shape[0])
-                ) / recon_image.shape[0]
-                msssim_batch = sum(
-                    _msssim_value(recon_image[j : j + 1], input_image[j : j + 1], msssim_calculator)
-                    for j in range(recon_image.shape[0])
-                ) / recon_image.shape[0]
                 pred = logits.argmax(dim=1)
                 batch_correct = (pred == labels).sum().item()
                 batch_total = labels.numel()
                 acc_batch = batch_correct / max(batch_total, 1)
+                if criterion_cls is not None:
+                    loss_sum += criterion_cls(logits, labels).item()
 
-                if criterion_rec is not None and criterion_cls is not None:
-                    rec_loss = criterion_rec(recon_image, input_image, feature, opt_idx=0, global_step=0)
-                    cls_loss = criterion_cls(logits, labels)
-                    loss_sum += (
-                        config.TASK.REC_LOSS_WEIGHT * rec_loss.item()
-                        + config.TASK.CLS_LOSS_WEIGHT * cls_loss.item()
-                    )
-
-                psnr_sum += psnr_batch
-                msssim_sum += msssim_batch
                 correct += batch_correct
                 total += batch_total
                 n_batch += 1
                 tqdm_data.set_postfix(
                     {
                         "SNR": snr,
-                        "PSNR": psnr_batch,
-                        "MS-SSIM": msssim_batch,
                         "Acc": acc_batch,
                     }
                 )
 
-        psnr_all.append(psnr_sum / n_batch)
-        msssim_all.append(msssim_sum / n_batch)
         acc_all.append(correct / max(total, 1))
-        if criterion_rec is not None and criterion_cls is not None:
+        if criterion_cls is not None:
             loss_all.append(loss_sum / n_batch)
 
     print(all_time / (len(snr_list) * len(test_loader) * config.DATA.TEST_BATCH))
     print("SNRs:", snr_list)
-    print("PSNR:", psnr_all)
-    print("MS-SSIM:", msssim_all)
     print("Accuracy:", acc_all)
+    if criterion_cls is not None:
+        print("Cls loss:", loss_all)
     if save_curves:
         log_dir = _get_log_dir(config)
-        _save_curve(snr_list, psnr_all, "psnr", log_dir, prefix=prefix)
-        _save_curve(snr_list, msssim_all, "MS-SSIM", log_dir, prefix=prefix)
         _save_curve(snr_list, acc_all, "acc", log_dir, prefix=prefix)
+        if loss_all:
+            _save_curve(snr_list, loss_all, "cls_loss", log_dir, prefix=prefix)
     mean_loss = sum(loss_all) / len(loss_all) if loss_all else None
-    return psnr_all, msssim_all, acc_all, mean_loss
+    return acc_all, mean_loss
 
 
 @torch.no_grad()
-def test_MambaJSCC_multitask(config):
+def test_MambaJSCC_classification(config):
     _, test_loader = get_loader(config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    name = multitask_checkpoint_name(config) + ".pt"
+    name = classification_checkpoint_name(config) + ".pt"
     encoder = torch.load(
-        os.path.join(config.TRAIN.ENCODER_PATH, name),
-        weights_only=False,
-        map_location=device,
-    ).to(device)
-    decoder = torch.load(
-        os.path.join(config.TRAIN.DECODER_PATH, name),
+        os.path.join(classification_encoder_save_dir(config), name),
         weights_only=False,
         map_location=device,
     ).to(device)
@@ -238,43 +211,4 @@ def test_MambaJSCC_multitask(config):
         weights_only=False,
         map_location=device,
     ).to(device)
-    eval_MambaJSCC_multitask_models(config, encoder, decoder, classifier, test_loader=test_loader)
-
-
-from tasks.classification.eval_cls import (
-    eval_MambaJSCC_classification_models as _eval_MambaJSCC_classification_models,
-    save_classification_models as _save_classification_models,
-    test_MambaJSCC_classification as _test_MambaJSCC_classification,
-)
-
-
-def save_multitask_models(config, encoder, decoder, classifier):
-    """Compatibility wrapper. Decoder is ignored by the classification task."""
-    return _save_classification_models(config, encoder, classifier)
-
-
-def eval_MambaJSCC_multitask_models(
-    config,
-    encoder,
-    decoder,
-    classifier,
-    test_loader=None,
-    criterion_rec=None,
-    criterion_cls=None,
-    save_curves=True,
-    prefix="snr",
-):
-    """Compatibility wrapper. Reconstruction loss and decoder are ignored."""
-    return _eval_MambaJSCC_classification_models(
-        config,
-        encoder,
-        classifier,
-        test_loader=test_loader,
-        criterion_cls=criterion_cls,
-        save_curves=save_curves,
-        prefix=prefix,
-    )
-
-
-def test_MambaJSCC_multitask(config):
-    return _test_MambaJSCC_classification(config)
+    eval_MambaJSCC_classification_models(config, encoder, classifier, test_loader=test_loader)

@@ -17,6 +17,7 @@ from run.eval import eval_MambaJSCC_models
 import csv
 import os
 import gc
+from datetime import timedelta
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -206,7 +207,7 @@ def _setup_distributed():
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     torch.cuda.set_device(local_rank)
     if not dist.is_initialized():
-        dist.init_process_group(backend="nccl")
+        dist.init_process_group(backend="nccl", timeout=timedelta(hours=2))
     return True, dist.get_rank(), local_rank
 
 

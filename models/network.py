@@ -31,16 +31,3 @@ class Mamba_decoder(nn.Module):
         recon_image = self.decoder(feature, SNR)
 
         return recon_image
-    
-class Mamba_classify(nn.Module):
-    def __init__(self, config):
-        super(Mamba_classify, self).__init__()
-        self.config = config
-
-        self.decoder = create_decoder(config)
-
-
-    def forward(self, feature, SNR):
-        recon_image = self.decoder(feature, SNR)
-
-        return recon_image

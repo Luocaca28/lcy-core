@@ -5,31 +5,17 @@
 
 
 import os
-import time
-import json
-import random
 import argparse
-import datetime
-import numpy as np
 
-import torch
-import torch.backends.cudnn as cudnn
 import torch.distributed as dist
-
-from timm.utils import accuracy, AverageMeter
 
 from configs.config import get_config
 
 
 from utils.utils import seed_torch
 
-from fvcore.nn import FlopCountAnalysis, flop_count_str, flop_count
-
-from timm.utils import ModelEma as ModelEma
 from run.train import train_MambaJSCC
 from run.eval import test_MambaJSCC
-from run.train_multitask import train_MambaJSCC_multitask
-from run.eval_multitask import test_MambaJSCC_multitask
 
 from utils.utils import GPUManager
 
@@ -47,7 +33,7 @@ def parse_args():
     parser.add_argument(
         "--mode",
         default="test",
-        choices=["train", "test", "train_multitask", "test_multitask"],
+        choices=["train", "test"],
     )
     parsed = parser.parse_args()
     project_path = os.path.abspath(parsed.project_path)
@@ -79,20 +65,6 @@ def main(args):
 
         seed_torch()
         test_MambaJSCC(config)
-
-    elif args.mode == 'train_multitask':
-
-        seed_torch()
-        train_MambaJSCC_multitask(config)
-        if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
-            return
-        seed_torch()
-        test_MambaJSCC_multitask(config)
-
-    elif args.mode == 'test_multitask':
-
-        seed_torch()
-        test_MambaJSCC_multitask(config)
 
 if __name__ == "__main__":
     main(parse_args())

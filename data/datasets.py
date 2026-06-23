@@ -97,6 +97,22 @@ class Datasets_train(Dataset):
         return len(self.imgs)
 
 
+class TransformSubset(Dataset):
+    def __init__(self, base_dataset, indices, transform):
+        self.base_dataset = base_dataset
+        self.indices = list(indices)
+        self.transform = transform
+
+    def __getitem__(self, item):
+        image, target = self.base_dataset[self.indices[item]]
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, target
+
+    def __len__(self):
+        return len(self.indices)
+
+
 def get_loader(config, test_data_dir=None):
     eval_data_dir = test_data_dir or config.DATA.test_data_dir
 
@@ -106,13 +122,26 @@ def get_loader(config, test_data_dir=None):
         )
 
         transform_test = transforms.Compose([transforms.ToTensor()])
-        train_dataset = datasets.CIFAR10(
-            root=config.DATA.train_data_dir, train=True, transform=transform_train, download=False
+        full_train_dataset = datasets.CIFAR10(
+            root=config.DATA.train_data_dir, train=True, transform=None, download=False
+        )
+        val_ratio = float(getattr(config.DATA, "VAL_RATIO", 0.1))
+        val_size = int(len(full_train_dataset) * val_ratio)
+        train_size = len(full_train_dataset) - val_size
+        generator = torch.Generator().manual_seed(int(getattr(config.DATA, "VAL_SEED", 42)))
+        train_subset, val_subset = torch.utils.data.random_split(
+            full_train_dataset, [train_size, val_size], generator=generator
         )
 
-        test_dataset = datasets.CIFAR10(
-            root=eval_data_dir, train=False, transform=transform_test, download=False
+        train_dataset = TransformSubset(full_train_dataset, train_subset.indices, transform_train)
+        val_dataset = TransformSubset(full_train_dataset, val_subset.indices, transform_test)
+        official_test_dataset = datasets.CIFAR10(
+            root=config.DATA.test_data_dir, train=False, transform=transform_test, download=False
         )
+        if test_data_dir is None:
+            test_dataset = official_test_dataset
+        else:
+            test_dataset = val_dataset
     elif config.DATA.DATASET == "DIV2K":
         transform_train = transforms.Compose(
             [
