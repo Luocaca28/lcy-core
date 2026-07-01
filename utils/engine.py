@@ -144,6 +144,52 @@ def apply_channel(channel, config, feature, snr):
     return torch.cat((torch.real(received), torch.imag(received)), dim=2) * torch.sqrt(pwr)
 
 
+def apply_compact_channel(config, code, snr):
+    """Channel on a compact code ``[B, D]`` (D even) for classification.
+
+    The encoder feature is global-average-pooled to ``code`` BEFORE this call, so
+    there is no spatial dimension left to average the noise over -- the noise hits
+    the transmitted code directly and classification accuracy becomes SNR-sensitive
+    (unlike ``apply_channel`` on the full spatial map, where the head's pooling
+    averages the noise away). Mirrors ``apply_channel``'s SNR/power convention:
+    first D/2 entries are the real part, last D/2 the imaginary part of D/2 complex
+    symbols; signal normalised to unit power, noise std ``sqrt(1/(2*10**(snr/10)))``
+    per complex component.
+    """
+    code = code.float()
+    half = code.shape[1] // 2
+    real, imag = code[:, :half].contiguous(), code[:, half:half * 2].contiguous()
+    x = torch.complex(real, imag)
+    pwr = torch.mean(torch.abs(x) ** 2) * 2
+    x = x / torch.sqrt(pwr)
+    sigma = float(1.0 / (2 * 10 ** (snr / 10))) ** 0.5
+    noise = torch.randn_like(real) * sigma + 1j * torch.randn_like(imag) * sigma
+    if config.CHANNEL.TYPE == "rayleigh":
+        h = (torch.randn_like(real) + 1j * torch.randn_like(imag)) / (2 ** 0.5)
+        received = x * h + noise
+        sigma_square = 1.0 / (10 ** (snr / 10))
+        received = torch.conj(h) * received / (torch.abs(h) ** 2 + sigma_square)
+    else:  # awgn
+        received = x + noise
+    return torch.cat((received.real, received.imag), dim=1) * torch.sqrt(pwr)
+
+
+def apply_channel_compact(channel, config, feature, snr):
+    """Compact-code channel for classification (task-oriented transmission).
+
+    Global-average-pool the encoder feature to a per-channel code BEFORE the
+    channel, then transmit only that compact ``(B, C)`` code. The channel noise
+    therefore hits the C-dim code directly instead of a large ``(B, C, H, W)``
+    spatial map -- whose later pooling in the head would otherwise average the
+    noise away (~1/sqrt(H*W)) and make accuracy independent of SNR. The received
+    ``(B, C)`` code is fed to the head, which does not pool a 2-D input. ``channel``
+    is accepted for call-site parallelism with ``apply_channel`` but unused (the
+    compact channel math lives in ``apply_compact_channel``).
+    """
+    code = feature.mean(dim=(2, 3))                 # (B, C) compact code
+    return apply_compact_channel(config, code, snr)
+
+
 # ---------------------------------------------------------------------------
 # Logging / checkpoint naming
 # ---------------------------------------------------------------------------

@@ -134,7 +134,7 @@ void set_ssm_params_bwd(SSMParamsBwd &params,
                         void* ddelta_bias_ptr,
                         bool delta_softplus) {
     // Pass in "dout" instead of "out", we're not gonna use "out" unless we have z
-    set_ssm_params_fwd(params, batch, dim, seqlen, dstate, n_groups, n_chunks, 0,
+    set_ssm_params_fwd(params, batch, dim, seqlen, dstate, n_groups, n_chunks,
                        u, delta, A, B, C, dout,
                        D_ptr, delta_bias_ptr, x_ptr, delta_softplus);
 
@@ -171,8 +171,7 @@ selective_scan_fwd(const at::Tensor &u, const at::Tensor &delta,
                   const c10::optional<at::Tensor> &D_,
                   const c10::optional<at::Tensor> &delta_bias_,
                   bool delta_softplus,
-                  int nrows,
-                  
+                  int nrows
                   ) {
     auto input_type = u.scalar_type();
     auto weight_type = A.scalar_type();

@@ -1,0 +1,46 @@
+TRAIN:
+  EPOCHS: 100
+  SAVE_FRE: 10
+  EVAL_FRE: 5
+  LOSS: 'CLS'
+  EVAL_MATRIX: 'ACC'
+  BASE_LR: 0.0001
+  WEIGHT_DECAY: 0.1
+  LOG_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/Imagewoof_cls_trainsnr20_oc32_b32x2_r128/logs/'
+  GAN_LOSS: False
+MODEL:
+  DROP_PATH_RATE: 0.3
+  VSSM:
+    OUT_CHANS: 32
+    MLP_DROP_RATE: 0.1
+DATA:
+  DATASET: "imagewoof"
+  TRAIN_BATCH: 32
+  TEST_BATCH: 32
+  IMG_SIZE: 128
+  VAL_RATIO: 0.1
+  VAL_SEED: 42
+  STRONG_AUG: True
+  train_data_dir: "/home/LYC/lcy/Datasets/imagewoof2/train"
+  val_data_dir: "/home/LYC/lcy/Datasets/imagewoof2/val"
+  test_data_dir: "/home/LYC/lcy/Datasets/imagewoof2/val"
+CHANNEL:
+  TYPE: 'awgn'
+  SNR: [1, 3, 5, 7, 9, 11, 13, 15, 17, 20]
+  TRAIN_SNR: 20
+  ADAPTIVE: 'no'
+CLS:
+  STAGE: "from_scratch"
+  NUM_CLASSES: 10
+  SNR_EMBED_DIM: 32
+  HEAD_HIDDEN_DIM: 256
+  HEAD_DROPOUT: 0.5
+  HEAD_LR: 0.001
+  HEAD_WEIGHT_DECAY: 0.1
+  USE_SNR_EMBED: False
+  LABEL_SMOOTHING: 0.1
+  MIXUP_ALPHA: 0.2
+  ENCODER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/Imagewoof_cls_trainsnr20_oc32_b32x2_r128/encoder/'
+  CLASSIFIER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/Imagewoof_cls_trainsnr20_oc32_b32x2_r128/classifier/'
+  PRETRAIN_ENCODER: ""
+  PRETRAIN_CLASSIFIER: ""

@@ -34,8 +34,14 @@ Both tasks pull plumbing from here; it depends only on low-level utils (never on
 
 `models/vmamba.py` imports a compiled CUDA extension at module load and has **no pure-PyTorch fallback** — the model cannot even be imported (let alone trained) without one built. Requires Linux + NVIDIA GPU + CUDA toolkit + MSVC/gcc host compiler.
 
-- `adaptive_selective_scan_cuda_core` — required for `CHANNEL.ADAPTIVE='ssm'` (the paper's CSI-ReST method). Build: `cd adaptive_selective_scan && rm -rf dist build && pip install .`
-- `selective_scan_cuda` — only for `attn`/`no` ablations (optional). Build: `cd selective_scan && rm -rf dist build && pip install .`
+- `adaptive_selective_scan_cuda_core` — required for `CHANNEL.ADAPTIVE='ssm'` (the paper's CSI-ReST method). Build from `adaptive_selective_scan/`.
+- `selective_scan_cuda_core` — required for `CHANNEL.ADAPTIVE='no'`/`'attn'` ablations. Build from `selective_scan/`. **Also uncomment `import selective_scan_cuda_core` at `models/vmamba.py:26`** (commented by default) so the non-adaptive path can find it; otherwise `'no'`/`'attn'` crash with `NameError: name 'selective_scan_cuda_core' is not defined`.
+
+Build command for either core: `cd <dir> && rm -rf dist build *.egg-info && pip install . --no-build-isolation`. Build gotchas (all hit in practice on newer torch):
+- **`--no-build-isolation` is mandatory**: modern pip builds in an isolated env without torch, so `setup.py`'s `import torch` dies with `ModuleNotFoundError: No module named 'torch'`.
+- **The two `setup.py` project names must differ.** Both shipped with `name="adaptive_selective_scan"`, so installing one pip-*uninstalls* the other's `.so` (different extension module names, same distribution name). `selective_scan/setup.py` is renamed to `name="selective_scan_core"` so both coexist.
+- **Verify with torch imported first**: `python -c "import torch; import selective_scan_cuda_core"` — importing the core alone raises `ImportError: libc10.so` because torch's shared libs aren't loaded yet (the model imports torch before the core, so runtime is fine).
+- `selective_scan/csrc/selective_scan/selective_scan.cpp` had two source bugs from a sloppy de-adaptive edit (a stray `0` arg in the `set_ssm_params_fwd` call and a trailing comma in the `selective_scan_fwd` signature) — fixed against the working `selective_scan_bwd` as reference.
 
 Reconstruction also hardcodes `cuda` and `ReconstructionLoss` builds `lpips().cuda()`, so a GPU is mandatory.
 

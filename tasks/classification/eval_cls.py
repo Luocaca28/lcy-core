@@ -15,7 +15,7 @@ from tqdm import tqdm
 from data.datasets import get_loader
 from models.channel import Channel
 from tasks.classification.task_head import LatentClassifierHead
-from utils.engine import apply_channel, checkpoint_tag, get_log_dir
+from utils.engine import apply_channel, apply_channel_compact, checkpoint_tag, get_log_dir
 from utils.utils import save_model, seed_torch
 
 
@@ -68,7 +68,7 @@ def save_classification_models(config, encoder, classifier):
 
 
 def _prepare_input(config, input_image):
-    if config.DATA.DATASET == "CIFAR10":
+    if config.DATA.DATASET in ("CIFAR10", "CIFAR100", "cifar100", "CIFAR-100"):
         return torch.nn.functional.interpolate(
             input_image,
             (config.DATA.IMG_SIZE, config.DATA.IMG_SIZE),
@@ -96,6 +96,11 @@ def _save_curve(snr_list, values, name, log_dir, prefix="snr"):
         plt.ylabel(name)
         plt.title(f"SNR-{name}")
         plt.grid(True)
+        # Accuracy on a fixed [0, 1] axis so a flat plateau reads as flat and a
+        # real drop is visible -- auto-scaling zooms into sub-1% noise and makes a
+        # dead-flat curve look like wild fluctuation.
+        if name == "acc":
+            plt.ylim(0.0, 1.0)
         plt.tight_layout()
         plt.savefig(png_path, dpi=200)
         plt.close()
@@ -120,11 +125,20 @@ def evaluate_classification(
     encoder.eval()
     classifier.eval()
 
-    snr_list = config.CHANNEL.SNR
+    # Validation/test sweep CHANNEL.EVAL_SNR when provided (training still samples
+    # CHANNEL.SNR), else fall back to CHANNEL.SNR.
+    snr_list = getattr(config.CHANNEL, "EVAL_SNR", None) or config.CHANNEL.SNR
     acc_all, loss_all = [], []
     all_time = 0.0
 
     for snr in snr_list:
+        # Channel uses the true (swept) SNR; the model is fed a fixed SNR when
+        # BLIND_MODEL is set (mismatched-CSI ablation -> accuracy rises with SNR).
+        model_snr = (
+            float(config.CHANNEL.MODEL_SNR)
+            if getattr(config.CHANNEL, "BLIND_MODEL", False)
+            else snr
+        )
         correct = 0
         total = 0
         loss_sum = 0.0
@@ -139,9 +153,12 @@ def evaluate_classification(
                 input_image = _prepare_input(config, input_image)
 
                 start = time.time()
-                feature = encoder(input_image, snr)
-                z_hat = apply_channel(channel, config, feature, snr)
-                logits = classifier(z_hat, snr)
+                feature = encoder(input_image, model_snr)
+                if getattr(config.CHANNEL, "COMPACT_CODE", False):
+                    z_hat = apply_channel_compact(channel, config, feature, snr)
+                else:
+                    z_hat = apply_channel(channel, config, feature, snr)
+                logits = classifier(z_hat, model_snr)
                 all_time += time.time() - start
 
                 pred = logits.argmax(dim=1)

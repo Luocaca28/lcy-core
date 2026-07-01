@@ -110,7 +110,7 @@ def get_ext():
 
 ext_modules = get_ext()
 setup(
-    name="adaptive_selective_scan",
+    name="selective_scan_core",
     version="0.0.2",
     packages=[],
     author="Tri Dao, Albert Gu, Mzreo",

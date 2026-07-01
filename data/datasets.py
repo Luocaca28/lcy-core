@@ -142,6 +142,132 @@ def get_loader(config, test_data_dir=None):
             test_dataset = official_test_dataset
         else:
             test_dataset = val_dataset
+    elif config.DATA.DATASET in ("CIFAR100", "cifar100", "CIFAR-100"):
+        # torchvision expects <train_data_dir>/cifar-100-python/. 50k train images
+        # (100 classes x 500) + 10k official test. CIFAR-100 ships no val split, so
+        # mirror the CIFAR10 protocol: carve a VAL_RATIO val out of train (seeded by
+        # VAL_SEED) for in-training monitoring, keep the official test as held-out.
+        # 32x32 images are interpolated to IMG_SIZE inside the pipeline (_prepare_input).
+        if getattr(config.DATA, "STRONG_AUG", False):
+            transform_train = transforms.Compose(
+                [
+                    transforms.RandomCrop(32, padding=4),
+                    transforms.RandomHorizontalFlip(),
+                    transforms.ColorJitter(0.3, 0.3, 0.3),
+                    transforms.ToTensor(),
+                ]
+            )
+        else:
+            transform_train = transforms.Compose(
+                [transforms.RandomHorizontalFlip(), transforms.ToTensor()]
+            )
+        transform_test = transforms.Compose([transforms.ToTensor()])
+        full_train_dataset = datasets.CIFAR100(
+            root=config.DATA.train_data_dir, train=True, transform=None, download=False
+        )
+        val_ratio = float(getattr(config.DATA, "VAL_RATIO", 0.1))
+        val_size = int(len(full_train_dataset) * val_ratio)
+        train_size = len(full_train_dataset) - val_size
+        generator = torch.Generator().manual_seed(int(getattr(config.DATA, "VAL_SEED", 42)))
+        train_subset, val_subset = torch.utils.data.random_split(
+            full_train_dataset, [train_size, val_size], generator=generator
+        )
+        train_dataset = TransformSubset(full_train_dataset, train_subset.indices, transform_train)
+        val_dataset = TransformSubset(full_train_dataset, val_subset.indices, transform_test)
+        official_test_dataset = datasets.CIFAR100(
+            root=config.DATA.test_data_dir, train=False, transform=transform_test, download=False
+        )
+        if test_data_dir is None:
+            test_dataset = official_test_dataset
+        else:
+            test_dataset = val_dataset
+    elif config.DATA.DATASET in ("imagewoof", "Imagewoof", "imagewoof2"):
+        # ImageFolder layout: <train_data_dir>/<class>/*.JPEG, <test_data_dir>/<class>/*.JPEG.
+        # Mirrors the CIFAR10 protocol: carve a VAL_RATIO val split out of the train
+        # folder (seeded by VAL_SEED) for in-training monitoring, and use the official
+        # val/ folder as the held-out test set. Augmentation matches CIFAR (flip only);
+        # variable-size images are resized to IMG_SIZE (no runtime interpolate needed).
+        if getattr(config.DATA, "STRONG_AUG", False):
+            # Strong augmentation to fight overfitting on small datasets:
+            # scale/aspect jitter + flip + color jitter. Each epoch the model
+            # sees a different crop/color of every image, so memorization fails.
+            transform_train = transforms.Compose(
+                [
+                    transforms.RandomResizedCrop(
+                        config.DATA.IMG_SIZE, scale=(0.6, 1.0), ratio=(0.75, 1.333)
+                    ),
+                    transforms.RandomHorizontalFlip(),
+                    transforms.ColorJitter(0.3, 0.3, 0.3),
+                    transforms.ToTensor(),
+                ]
+            )
+        else:
+            transform_train = transforms.Compose(
+                [
+                    transforms.Resize((config.DATA.IMG_SIZE, config.DATA.IMG_SIZE)),
+                    transforms.RandomHorizontalFlip(),
+                    transforms.ToTensor(),
+                ]
+            )
+        transform_test = transforms.Compose(
+            [
+                transforms.Resize((config.DATA.IMG_SIZE, config.DATA.IMG_SIZE)),
+                transforms.ToTensor(),
+            ]
+        )
+        full_train_dataset = datasets.ImageFolder(root=config.DATA.train_data_dir, transform=None)
+        val_ratio = float(getattr(config.DATA, "VAL_RATIO", 0.1))
+        val_size = int(len(full_train_dataset) * val_ratio)
+        train_size = len(full_train_dataset) - val_size
+        generator = torch.Generator().manual_seed(int(getattr(config.DATA, "VAL_SEED", 42)))
+        train_subset, val_subset = torch.utils.data.random_split(
+            full_train_dataset, [train_size, val_size], generator=generator
+        )
+        train_dataset = TransformSubset(full_train_dataset, train_subset.indices, transform_train)
+        val_dataset = TransformSubset(full_train_dataset, val_subset.indices, transform_test)
+        official_test_dataset = datasets.ImageFolder(
+            root=config.DATA.test_data_dir, transform=transform_test
+        )
+        if test_data_dir is None:
+            test_dataset = official_test_dataset
+        else:
+            test_dataset = val_dataset
+    elif config.DATA.DATASET in ("imagenet100", "imagenet-100", "ImageNet100", "ImageNet-100"):
+        # Pre-split 3-way ImageFolder layout: <train_data_dir>/<class>/*, plus
+        # separate val/ and test/ folders. Unlike the imagewoof branch we do NOT
+        # carve val out of train -- the explicit val/test folders are used directly
+        # via eval_data_dir (= val_data_dir during training, test_data_dir at test).
+        # train and the eval split are wrapped in TransformSubset over ALL indices
+        # so the clean-train overfit-gap diagnostic (train_cls) still fires.
+        if getattr(config.DATA, "STRONG_AUG", False):
+            transform_train = transforms.Compose(
+                [
+                    transforms.RandomResizedCrop(
+                        config.DATA.IMG_SIZE, scale=(0.6, 1.0), ratio=(0.75, 1.333)
+                    ),
+                    transforms.RandomHorizontalFlip(),
+                    transforms.ColorJitter(0.3, 0.3, 0.3),
+                    transforms.ToTensor(),
+                ]
+            )
+        else:
+            transform_train = transforms.Compose(
+                [
+                    transforms.Resize((config.DATA.IMG_SIZE, config.DATA.IMG_SIZE)),
+                    transforms.RandomHorizontalFlip(),
+                    transforms.ToTensor(),
+                ]
+            )
+        transform_test = transforms.Compose(
+            [
+                transforms.Resize((config.DATA.IMG_SIZE, config.DATA.IMG_SIZE)),
+                transforms.ToTensor(),
+            ]
+        )
+        base_train = datasets.ImageFolder(root=config.DATA.train_data_dir, transform=None)
+        train_dataset = TransformSubset(base_train, range(len(base_train)), transform_train)
+        base_eval = datasets.ImageFolder(root=eval_data_dir, transform=None)
+        test_dataset = TransformSubset(base_eval, range(len(base_eval)), transform_test)
     elif config.DATA.DATASET == "DIV2K":
         transform_train = transforms.Compose(
             [

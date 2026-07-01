@@ -21,7 +21,7 @@ import torch.optim as optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 
-from data.datasets import get_loader
+from data.datasets import get_loader, TransformSubset
 from models.channel import Channel
 from models.network import Mamba_encoder
 from tasks.classification.eval_cls import (
@@ -32,6 +32,7 @@ from tasks.classification.eval_cls import (
 )
 from utils.engine import (
     apply_channel,
+    apply_channel_compact,
     build_adamw_with_tri_merge,
     build_warmup_cosine_schedulers,
     collect_tri_path_weight_stats,
@@ -113,7 +114,10 @@ def _clip_grad(config, *models):
 
 def _save_classification_curve(records, log_dir):
     csv_path = os.path.join(log_dir, "classification_curve.csv")
-    fieldnames = ["epoch", "train_cls_loss", "train_acc", "val_cls_loss", "val_acc"]
+    fieldnames = [
+        "epoch", "train_cls_loss", "train_acc", "val_cls_loss", "val_acc",
+        "clean_train_cls_loss", "clean_train_acc",
+    ]
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -130,9 +134,15 @@ def _save_classification_curve(records, log_dir):
         val_epochs = [row["epoch"] for row in records if row["val_cls_loss"] != ""]
         train_acc = [row["train_acc"] for row in records]
         val_acc = [row["val_acc"] for row in records if row["val_acc"] != ""]
+        ct_loss = [row["clean_train_cls_loss"] for row in records if row.get("clean_train_cls_loss", "") != ""]
+        ct_loss_epochs = [row["epoch"] for row in records if row.get("clean_train_cls_loss", "") != ""]
+        ct_acc = [row["clean_train_acc"] for row in records if row.get("clean_train_acc", "") != ""]
+        ct_acc_epochs = [row["epoch"] for row in records if row.get("clean_train_acc", "") != ""]
 
         plt.figure()
-        plt.plot(epochs, train_losses, marker="o", label="train cls loss")
+        plt.plot(epochs, train_losses, marker="o", label="train cls loss (mixup)")
+        if ct_loss:
+            plt.plot(ct_loss_epochs, ct_loss, marker="^", label="clean train cls loss")
         if val_losses:
             plt.plot(val_epochs, val_losses, marker="s", label="val cls loss")
         plt.xlabel("Epoch")
@@ -144,7 +154,9 @@ def _save_classification_curve(records, log_dir):
         plt.close()
 
         plt.figure()
-        plt.plot(epochs, train_acc, marker="o", label="train acc")
+        plt.plot(epochs, train_acc, marker="o", label="train acc (mixup)")
+        if ct_acc:
+            plt.plot(ct_acc_epochs, ct_acc, marker="^", label="clean train acc")
         if val_acc:
             plt.plot(val_epochs, val_acc, marker="s", label="val acc")
         plt.xlabel("Epoch")
@@ -195,11 +207,43 @@ def train_classification(config):
         for name, optimizer in optimizers.items():
             print_optimizer_groups(name, optimizer)
 
-    criterion_cls = nn.CrossEntropyLoss()
+    criterion_cls = nn.CrossEntropyLoss(
+        label_smoothing=float(getattr(config.CLS, "LABEL_SMOOTHING", 0.0))
+    )
+    mixup_alpha = float(getattr(config.CLS, "MIXUP_ALPHA", 0.0))
+    mixup_dist = (
+        torch.distributions.Beta(mixup_alpha, mixup_alpha) if mixup_alpha > 0 else None
+    )
+    if is_main_process() and mixup_dist is not None:
+        print(f"Mixup enabled: alpha={mixup_alpha}")
     log_dir = get_log_dir(config)
     eval_fre = getattr(config.TRAIN, "EVAL_FRE", 10)
     records = []
     tri_weight_records = []
+
+    # Clean-train eval loader: train-split images with the val (clean, un-mixed,
+    # un-augmented) transform, capped to ~val size for speed. Evaluated exactly
+    # like val, so clean-train vs val accuracy are on the SAME footing and their
+    # gap is the TRUE generalization gap. (The in-loop train_acc is computed on
+    # Mixup'd images and is not comparable to val -- do not read overfitting off it.)
+    train_snr = getattr(config.CHANNEL, "TRAIN_SNR", None)
+    if is_main_process() and train_snr is not None:
+        print(f"Single-SNR training at SNR={train_snr} dB; eval sweeps {config.CHANNEL.SNR}")
+
+    compact_code = getattr(config.CHANNEL, "COMPACT_CODE", False)
+    if is_main_process() and compact_code:
+        print("Compact-code transmission: channel acts on the pooled code (SNR-sensitive).")
+
+    clean_train_loader = None
+    _tr_ds = getattr(train_loader, "dataset", None)
+    _va_ds = getattr(val_loader, "dataset", None)
+    if isinstance(_tr_ds, TransformSubset) and isinstance(_va_ds, TransformSubset):
+        _n = min(len(_va_ds), len(_tr_ds.indices))
+        clean_train_loader = torch.utils.data.DataLoader(
+            TransformSubset(_tr_ds.base_dataset, list(_tr_ds.indices)[:_n], _va_ds.transform),
+            batch_size=config.DATA.TEST_BATCH,
+            shuffle=False,
+        )
 
     seed_torch()
     for e in range(config.TRAIN.EPOCHS):
@@ -216,17 +260,49 @@ def train_classification(config):
                 if not torch.is_tensor(labels):
                     raise ValueError("Classification requires class labels.")
                 snr_list = config.CHANNEL.SNR
-                snr = snr_list[torch.randint(0, len(snr_list), (1,)).item()]
+                if train_snr is not None:
+                    snr = train_snr
+                else:
+                    snr = snr_list[torch.randint(0, len(snr_list), (1,)).item()]
+                # Channel sees the true SNR; the model may be fed a fixed SNR
+                # (BLIND_MODEL) so it cannot adapt to the channel -- this is what
+                # makes accuracy rise with SNR (the mismatched-CSI ablation).
+                model_snr = (
+                    float(config.CHANNEL.MODEL_SNR)
+                    if getattr(config.CHANNEL, "BLIND_MODEL", False)
+                    else snr
+                )
 
                 input_image = input_image.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
                 input_image = _prepare_input(config, input_image)
                 _zero_grad(optimizers)
 
-                feature = encoder(input_image, snr)
-                z_hat = apply_channel(channel, config, feature, snr)
-                logits = classifier(z_hat, snr)
-                cls_loss = criterion_cls(logits, labels)
+                if mixup_dist is not None:
+                    # Mixup: blend each image with another in the batch and train
+                    # on the convex combination of both targets. Strongly discourages
+                    # memorizing individual samples.
+                    lam = mixup_dist.sample().item()
+                    perm = torch.randperm(input_image.size(0), device=device)
+                    input_image = lam * input_image + (1.0 - lam) * input_image[perm]
+                    labels_b = labels[perm]
+                    feature = encoder(input_image, model_snr)
+                    if compact_code:
+                        z_hat = apply_channel_compact(channel, config, feature, snr)
+                    else:
+                        z_hat = apply_channel(channel, config, feature, snr)
+                    logits = classifier(z_hat, model_snr)
+                    cls_loss = lam * criterion_cls(logits, labels) + (1.0 - lam) * criterion_cls(
+                        logits, labels_b
+                    )
+                else:
+                    feature = encoder(input_image, model_snr)
+                    if compact_code:
+                        z_hat = apply_channel_compact(channel, config, feature, snr)
+                    else:
+                        z_hat = apply_channel(channel, config, feature, snr)
+                    logits = classifier(z_hat, model_snr)
+                    cls_loss = criterion_cls(logits, labels)
                 cls_loss.backward()
 
                 if getattr(config.MODEL.VSSM, "TRI_MERGE_DEBUG", False) and is_main_process() and i == 0:
@@ -254,6 +330,8 @@ def train_classification(config):
             "train_acc": train_acc,
             "val_cls_loss": "",
             "val_acc": "",
+            "clean_train_cls_loss": "",
+            "clean_train_acc": "",
         }
         if is_main_process():
             tri_record = {"epoch": e + 1}
@@ -284,6 +362,19 @@ def train_classification(config):
                 )
                 row["val_cls_loss"] = val_loss if val_loss is not None else ""
                 row["val_acc"] = sum(val_acc_curve) / len(val_acc_curve)
+                if clean_train_loader is not None:
+                    print("---- clean-train accuracy (un-mixed, for overfit gap) ----")
+                    ct_curve, ct_loss = evaluate_classification(
+                        config,
+                        unwrap_parallel(encoder),
+                        unwrap_parallel(classifier),
+                        test_loader=clean_train_loader,
+                        criterion_cls=criterion_cls,
+                        save_curves=False,
+                        prefix="clean_train",
+                    )
+                    row["clean_train_acc"] = sum(ct_curve) / len(ct_curve)
+                    row["clean_train_cls_loss"] = ct_loss if ct_loss is not None else ""
             if distributed:
                 dist.barrier()
 

@@ -23,7 +23,7 @@ DropPath.__repr__ = lambda self: f"timm.DropPath({self.drop_prob})"
 try:  ## successfully try
     "sscore acts the same as mamba_ssm"
     SSMODE = "sscore"
-    # import selective_scan_cuda_core
+    import selective_scan_cuda_core
     import adaptive_selective_scan_cuda_core
 except Exception as e:
     print(e, flush=True)

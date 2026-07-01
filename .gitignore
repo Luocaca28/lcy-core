@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .codex_pycache/
 
+# Claude Code local state (settings, worktrees) — machine-specific, do not commit
+.claude/
+

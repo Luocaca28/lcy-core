@@ -36,6 +36,10 @@ _C.DATA.val_data_dir= r"/mnt/wutong/datasets/DIV2K/DIV2K_valid_HR"
 _C.DATA.test_data_dir= r"/mnt/wutong/datasets/DIV2K/DIV2K_valid_HR"
 _C.DATA.VAL_RATIO = 0.1
 _C.DATA.VAL_SEED = 42
+# Strong train-time augmentation (RandomResizedCrop + ColorJitter) for
+# ImageFolder-style classification datasets. Off by default to preserve the
+# original light augmentation; turn on to fight overfitting on small datasets.
+_C.DATA.STRONG_AUG = False
 # Interpolation to resize image (random, bilinear, bicubic)
 _C.DATA.INTERPOLATION = 'bicubic'
 # Use zipped dataset instead of folder dataset
@@ -63,6 +67,25 @@ _C.CHANNEL=CN()
 _C.CHANNEL.TYPE='awgn'
 _C.CHANNEL.SNR=[20]
 _C.CHANNEL.ADAPTIVE='CA'
+# Mismatched-CSI ablation: the channel always uses the true (swept/sampled) SNR,
+# but when BLIND_MODEL is True the model (encoder + head) is fed a fixed MODEL_SNR
+# instead, so it cannot adapt to the channel. This makes accuracy rise with SNR
+# (vs the flat curve when the model knows the true SNR via CSI-ReST).
+_C.CHANNEL.BLIND_MODEL = False
+_C.CHANNEL.MODEL_SNR = 10.0
+# Compact-code transmission (classification): global-average-pool the encoder
+# feature to a per-channel code BEFORE the channel, so the noise hits the compact
+# code directly instead of a large spatial map (whose pooling would average the
+# noise away). This is what makes classification accuracy depend on SNR.
+_C.CHANNEL.COMPACT_CODE = False
+# Single-SNR training: if set (e.g. 20), every training batch uses this fixed SNR
+# instead of sampling from CHANNEL.SNR. Evaluation still sweeps CHANNEL.SNR. Trains
+# a model that never saw noise -> test accuracy degrades as SNR drops (rising curve).
+_C.CHANNEL.TRAIN_SNR = None
+# Separate evaluation SNR grid: if set (a list), validation AND test sweep these
+# SNRs instead of CHANNEL.SNR, while training still samples from CHANNEL.SNR. Use
+# to train on a dense SNR grid but report on a coarser one. None = reuse CHANNEL.SNR.
+_C.CHANNEL.EVAL_SNR = None
 # -----------------------------------------------------------------------------
 # Model settings
 # -----------------------------------------------------------------------------
@@ -195,6 +218,11 @@ _C.CLS.HEAD_DROPOUT = 0.0
 _C.CLS.HEAD_LR = 1e-3
 _C.CLS.HEAD_WEIGHT_DECAY = 1e-4
 _C.CLS.USE_SNR_EMBED = True
+# CrossEntropy label smoothing (0.0 = off). A cheap regularizer for small datasets.
+_C.CLS.LABEL_SMOOTHING = 0.0
+# Mixup alpha for Beta(alpha, alpha) input mixing (0.0 = off). Strong regularizer
+# against memorization; typical values 0.1-0.4.
+_C.CLS.MIXUP_ALPHA = 0.0
 # Checkpoint output directories
 _C.CLS.ENCODER_PATH = ""
 _C.CLS.CLASSIFIER_PATH = ""
