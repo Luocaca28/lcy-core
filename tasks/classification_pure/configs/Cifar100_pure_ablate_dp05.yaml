@@ -1,0 +1,48 @@
+# Overfitting ablation Run B: stronger DROP_PATH (single variable vs tier1 pure).
+# Identical to Cifar100_pure_cls.yaml EXCEPT DROP_PATH_RATE 0.3 -> 0.5. Uses the
+# default (full-size) model config, so ONLY drop_path changes. Isolated product
+# paths so it never collides with tier1. See MANIFEST.md for ladder context.
+TRAIN:
+  EPOCHS: 100
+  SAVE_FRE: 10
+  EVAL_FRE: 10
+  LOSS: 'CLS'
+  EVAL_MATRIX: 'ACC'
+  BASE_LR: 0.0001
+  WEIGHT_DECAY: 0.1
+  LOG_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/PURE_CLS/Cifar100_ablate_dp05/logs/'
+  GAN_LOSS: False
+MODEL:
+  DROP_PATH_RATE: 0.5
+  VSSM:
+    MLP_DROP_RATE: 0.1
+DATA:
+  DATASET: "CIFAR100"
+  TRAIN_BATCH: 32
+  TEST_BATCH: 32
+  IMG_SIZE: 128
+  VAL_RATIO: 0.1
+  VAL_SEED: 42
+  STRONG_AUG: True
+  train_data_dir: "/home/LYC/lcy/Datasets/"
+  val_data_dir: "/home/LYC/lcy/Datasets/"
+  test_data_dir: "/home/LYC/lcy/Datasets/"
+CHANNEL:
+  TYPE: 'awgn'
+  SNR: [20]
+  ADAPTIVE: 'no'
+CLS:
+  STAGE: "from_scratch"
+  NUM_CLASSES: 100
+  SNR_EMBED_DIM: 32
+  HEAD_HIDDEN_DIM: 256
+  HEAD_DROPOUT: 0.5
+  HEAD_LR: 0.001
+  HEAD_WEIGHT_DECAY: 0.1
+  USE_SNR_EMBED: False
+  LABEL_SMOOTHING: 0.1
+  MIXUP_ALPHA: 0.2
+  ENCODER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/PURE_CLS/Cifar100_ablate_dp05/cls_encoder/'
+  CLASSIFIER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/PURE_CLS/Cifar100_ablate_dp05/classifier/'
+  PRETRAIN_ENCODER: ""
+  PRETRAIN_CLASSIFIER: ""

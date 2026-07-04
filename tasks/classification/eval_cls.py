@@ -58,6 +58,8 @@ def build_latent_classifier(config):
         use_snr=config.CLS.USE_SNR_EMBED,
         snr_max=snr_max,
         dropout=config.CLS.HEAD_DROPOUT,
+        head_type=getattr(config.CLS, "HEAD_TYPE", "pool"),
+        num_queries=getattr(config.CLS, "NUM_QUERIES", 4),
     )
 
 

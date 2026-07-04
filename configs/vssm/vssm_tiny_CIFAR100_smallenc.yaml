@@ -1,0 +1,22 @@
+# Overfitting ablation: smaller VSSM encoder (attacks capacity >> data on CIFAR-100).
+# Copy of vssm_tiny_CIFAR10_multitask_defscan.yaml with EMBED_DIM/DEPTHS reduced
+# (~half the params). Everything else identical, so this is a single-variable
+# (encoder capacity) change vs the tier1 baseline. DROP_PATH here is overridden to
+# 0.3 by the task config (merged after) to match tier1.
+MODEL:
+  TYPE: vssm
+  NAME: vssm_tiny
+  DROP_PATH_RATE: 0.2
+  VSSM:
+    EMBED_DIM: [96,128,192,256]
+    DEPTHS: [2, 2, 4, 2]
+    OUT_CHANS: 32
+    SCAN: 'cross'
+    PE: 'no'
+    SCAN_NUMBER: 2
+    Extent: 'MLP'
+    channel_input: 'conv'
+    USE_DEFSCAN: True
+    DEFSCAN_DEF_INIT: 0.05
+    TRI_MERGE_LR_MULT: 3.0
+    TRI_MERGE_DEBUG: False

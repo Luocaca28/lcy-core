@@ -218,6 +218,11 @@ _C.CLS.HEAD_DROPOUT = 0.0
 _C.CLS.HEAD_LR = 1e-3
 _C.CLS.HEAD_WEIGHT_DECAY = 1e-4
 _C.CLS.USE_SNR_EMBED = True
+# Latent readout: "pool" (global average, default/back-compat) | "attn_pool"
+# (learnable-query cross-attention over the channel-output latent).
+_C.CLS.HEAD_TYPE = "pool"
+# Number of learnable queries for the attn_pool readout (unused when HEAD_TYPE="pool").
+_C.CLS.NUM_QUERIES = 4
 # CrossEntropy label smoothing (0.0 = off). A cheap regularizer for small datasets.
 _C.CLS.LABEL_SMOOTHING = 0.0
 # Mixup alpha for Beta(alpha, alpha) input mixing (0.0 = off). Strong regularizer

@@ -1,0 +1,47 @@
+# PURE_CLS baseline config: pure-compression classification, NO channel.
+# Copy of tasks/classification/configs/Imagenet100_cls_from_scratch.yaml with the
+# channel disabled. DefScan third branch stays ON via the shared model config
+# (vssm_tiny_CIFAR10_multitask_defscan.yaml: USE_DEFSCAN=True, OUT_CHANS=32).
+# Removable baseline -- see tasks/classification_pure/MANIFEST.md.
+TRAIN:
+  EPOCHS: 100
+  SAVE_FRE: 10
+  EVAL_FRE: 10
+  LOSS: 'CLS'
+  EVAL_MATRIX: 'ACC'
+  BASE_LR: 0.0001
+  WEIGHT_DECAY: 0.05
+  LOG_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/PURE_CLS/Imagenet100_pure_cls/logs/'
+  GAN_LOSS: False
+MODEL:
+  DROP_PATH_RATE: 0.1
+  VSSM:
+    MLP_DROP_RATE: 0.0
+DATA:
+  DATASET: "imagenet100"
+  TRAIN_BATCH: 32
+  TEST_BATCH: 32
+  IMG_SIZE: 128
+  STRONG_AUG: True
+  train_data_dir: "/home/LYC/lcy/Datasets/imagenet-100/split/train"
+  val_data_dir: "/home/LYC/lcy/Datasets/imagenet-100/split/val"
+  test_data_dir: "/home/LYC/lcy/Datasets/imagenet-100/split/test"
+CHANNEL:
+  TYPE: 'awgn'
+  SNR: [20]          # inert: read only by checkpoint_tag / build_latent_classifier
+  ADAPTIVE: 'no'     # encoder does no SNR conditioning -> pure compression
+CLS:
+  STAGE: "from_scratch"
+  NUM_CLASSES: 100
+  SNR_EMBED_DIM: 32
+  HEAD_HIDDEN_DIM: 256
+  HEAD_DROPOUT: 0.1
+  HEAD_LR: 0.001
+  HEAD_WEIGHT_DECAY: 0.05
+  USE_SNR_EMBED: False  # head ignores SNR (no channel)
+  LABEL_SMOOTHING: 0.1
+  MIXUP_ALPHA: 0.2
+  ENCODER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/PURE_CLS/Imagenet100_pure_cls/cls_encoder/'
+  CLASSIFIER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/PURE_CLS/Imagenet100_pure_cls/classifier/'
+  PRETRAIN_ENCODER: ""
+  PRETRAIN_CLASSIFIER: ""

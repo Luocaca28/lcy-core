@@ -1,0 +1,55 @@
+# Ladder tier (3): CIFAR-100 CSI-adaptive (ssm) communication classification.
+# This is a PERMANENT comm-experiment config (NOT part of the removable pure_cls
+# baseline). It is the tier-3 rung matched to tasks/classification_pure/configs/
+# Cifar100_snr20_nochan.yaml: SAME structure (ADAPTIVE='ssm', USE_SNR_EMBED=True,
+# no COMPACT_CODE) and SAME hyperparameters (epochs/reg/aug/batch/lr) -- the ONLY
+# difference vs tier (2) is that the feature passes through the channel. So the
+# (2) vs (3) accuracy gap = pure channel-noise cost. Runs on the untouched comm
+# code: tasks/classification/main_cls.py.
+TRAIN:
+  EPOCHS: 100
+  SAVE_FRE: 10
+  EVAL_FRE: 10
+  LOSS: 'CLS'
+  EVAL_MATRIX: 'ACC'
+  BASE_LR: 0.0001
+  WEIGHT_DECAY: 0.1
+  LOG_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/Cifar100_cls_ssm_b32_r128/logs/'
+  GAN_LOSS: False
+MODEL:
+  DROP_PATH_RATE: 0.3
+  VSSM:
+    MLP_DROP_RATE: 0.1
+DATA:
+  DATASET: "CIFAR100"
+  TRAIN_BATCH: 8       # 8 per GPU x 4 GPUs (DDP) = effective batch 32, matched to tier1/2
+  TEST_BATCH: 32
+  IMG_SIZE: 128
+  VAL_RATIO: 0.1
+  VAL_SEED: 42
+  STRONG_AUG: True
+  train_data_dir: "/home/LYC/lcy/Datasets/"
+  val_data_dir: "/home/LYC/lcy/Datasets/"
+  test_data_dir: "/home/LYC/lcy/Datasets/"
+CHANNEL:
+  TYPE: 'awgn'
+  SNR: [1, 3, 5, 7, 9, 11, 13, 15, 17, 20]   # training samples per batch
+  EVAL_SNR: [1, 3, 5, 10, 15, 20]            # val/test sweep
+  ADAPTIVE: 'ssm'                            # CSI-ReST ON
+  # NO COMPACT_CODE: transmit the full feature map (same structure as tier 2),
+  # so (2) vs (3) isolates noise only. COMPACT_CODE is a separate axis.
+CLS:
+  STAGE: "from_scratch"
+  NUM_CLASSES: 100
+  SNR_EMBED_DIM: 32
+  HEAD_HIDDEN_DIM: 256
+  HEAD_DROPOUT: 0.5
+  HEAD_LR: 0.001
+  HEAD_WEIGHT_DECAY: 0.1
+  USE_SNR_EMBED: True
+  LABEL_SMOOTHING: 0.1
+  MIXUP_ALPHA: 0.2
+  ENCODER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/Cifar100_cls_ssm_b32_r128/cls_encoder/'
+  CLASSIFIER_PATH: '/home/LYC/lcy/MambaJSCCcheckpoints/Cifar100_cls_ssm_b32_r128/classifier/'
+  PRETRAIN_ENCODER: ""
+  PRETRAIN_CLASSIFIER: ""
